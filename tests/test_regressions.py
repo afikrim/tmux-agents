@@ -35,7 +35,7 @@ class WindowSelectionTest(unittest.TestCase):
         rows = ui.build_rows([{"id":"$1", "name":"dev", "windows":[
             {"id":"@2", "index":"1", "name":"code", "panes":[
                 {"id":"%5", "agent":"codex", "status":"running", "current":False}]}]}])
-        self.assertEqual(rows[1]["focus_pane"], "%5")
+        self.assertEqual(next(row for row in rows if row["kind"] == "pane")["focus_pane"], "%5")
 
 
 class MenuPathTest(unittest.TestCase):

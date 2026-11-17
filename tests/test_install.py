@@ -83,6 +83,8 @@ class InstallTest(unittest.TestCase):
         T("set-hook", "-g", "after-new-window[5]", "run-shell 'echo sentinel'")
         T("bind-key", "-T", "prefix", "Q", "display-message", "sentinel")
         T("bind-key", "-T", "prefix", "v", "display-message", "prior-diff-key")
+        T("bind-key", "-T", "prefix", "s", "display-message", "prior-session-key")
+        T("bind-key", "-T", "prefix", "?", "display-message", "prior-help-key")
         r = self.cli("install")
         self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
         self.assertIn("sourced rc=0", r.stdout)
@@ -168,6 +170,8 @@ class InstallTest(unittest.TestCase):
         self.assertIn("sentinel", keys)
         self.assertNotIn("tmux-agents", T("list-keys").stdout)
         self.assertIn("prior-diff-key", T("list-keys", "-T", "prefix", "v").stdout)
+        self.assertIn("prior-session-key", T("list-keys", "-T", "prefix", "s").stdout)
+        self.assertIn("prior-help-key", T("list-keys", "-T", "prefix", "?").stdout)
         with open(self.conf) as f:
             self.assertNotIn("tmux-agents", f.read())
         # Provider entries removed, sentinels kept.

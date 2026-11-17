@@ -522,7 +522,12 @@ def cmd_sidebar(args):
     old = termios.tcgetattr(fd)
     winsize = [80, 24]
 
+    next_poll = 0.0
+    hover_ref = None
     def on_winch(_s, _f):
+        nonlocal next_poll, hover_ref
+        next_poll = 0.0
+        hover_ref = None
         import struct
         try:
             h, w = struct.unpack("HHHH", fcntl.ioctl(fd, termios.TIOCGWINSZ, b"\0" * 8))[:2]
@@ -530,11 +535,15 @@ def cmd_sidebar(args):
         except OSError:
             pass
 
+    wake_read, wake_write = os.pipe()
+    os.set_blocking(wake_read, False)
+    os.set_blocking(wake_write, False)
+    previous_wakeup = signal.set_wakeup_fd(wake_write)
     try:
         tty.setraw(fd)
-        sys.stdout.write("\x1b[?1049h\x1b[?1000h\x1b[?1006h\x1b[?25l" + ui.BASE + "\x1b[2J")
+        sys.stdout.write("\x1b[?1049h\x1b[?1003h\x1b[?1006h\x1b[?25l" + ui.BASE + "\x1b[2J")
         sys.stdout.flush()
-        signal.signal(signal.SIGWINCH, on_winch)
+        previous_winch = signal.signal(signal.SIGWINCH, on_winch)
         on_winch(None, None)
         import fcntl as _f2
         import struct
@@ -551,7 +560,13 @@ def cmd_sidebar(args):
         next_poll, sessions = 0, []
         editing, edit_text, edit_error = None, "", ""
         scroll_key, scroll_since = None, _t.monotonic()
+        hover_key, hover_since, hover_context = None, _t.monotonic(), None
+        project_id = origin_session or None
+        rows = []
+        decoder = ui.InputDecoder()
         while True:
+            previous_ref = rows[cursor]["ref"] if rows and 0 <= cursor < len(rows) else None
+            gained_focus = False
             now = _t.time()
             if now >= next_poll:
                 snapshot = store.read_state(paths)
@@ -561,23 +576,37 @@ def cmd_sidebar(args):
                 origin_session, origin_client = origin_context(prefix)
                 me = os.environ.get("TMUX_PANE", "")
                 if me:
-                    rc, out, _ = run_tmux(prefix, "display-message", "-p", "-t", me, "#{pane_active}")
+                    rc, out, _ = run_tmux(prefix, "display-message", "-p", "-t", me, "#{&&:#{pane_active},#{window_active}}")
                     if rc == 0 and out.strip() in ("0", "1"):
-                        focused = out.strip() == "1"
+                        previous_focus, focused = focused, out.strip() == "1"
+                        gained_focus = focused and not previous_focus
+                        if previous_focus != focused:
+                            hover_ref = None
                     # On query failure keep the last known value: a dead
                     # lookup must never dim the whole UI.
                 next_poll = now + 1.0
-            rows = ui.build_rows(sessions)
-            if not initialized:
-                cursor = next((i for i, row in enumerate(rows)
-                               if row["kind"] == "pane" and row.get("current")),
-                              next((i for i, row in enumerate(rows)
-                                    if row["kind"] == "session" and row.get("current")), 0))
-                initialized = True
-            last_redraw_rows = rows
+            if not focused and origin_session:
+                project_id = origin_session
+            if project_id not in {session["id"] for session in sessions}:
+                project_id = next((session["id"] for session in sessions if session.get("attached")),
+                                  next((session["id"] for session in sessions), None))
+            rows = ui.build_rows(sessions, project_id)
+            cursor = ui.selection_index(rows, previous_ref if initialized and not gained_focus else None, focused)
+            initialized = True
             cursor = max(0, min(cursor, len(rows) - 1)) if rows else 0
             if rows and focused and rows[cursor]["kind"] not in ("session", "pane"):
                 cursor = ui.move_selection(rows, cursor, "j")
+            if rows and focused and rows[cursor]["kind"] == "session" and rows[cursor]["ref"] != project_id:
+                project_id = rows[cursor]["ref"]
+                rows = ui.build_rows(sessions, project_id)
+            context = (project_id, tuple((row["ref"], row.get("current")) for row in rows))
+            if context != hover_context:
+                hover_ref = None
+                hover_context = context
+            hovered = next((row for row in rows if row["ref"] == hover_ref), {})
+            new_hover_key = (hover_ref, hovered.get("name"), winsize[0]) if hovered and not editing else None
+            if new_hover_key != hover_key:
+                hover_key, hover_since = new_hover_key, _t.monotonic()
             current = rows[cursor] if rows else {}
             focus_key = (current.get("ref"), current.get("name"), winsize[0]) if focused and not editing else None
             if focus_key != scroll_key:
@@ -585,9 +614,13 @@ def cmd_sidebar(args):
             name_space = ui.row_name_width(current, winsize[0]) if current else 0
             scrolling = bool(focus_key and name_space > 0 and
                              ui.cell_width(current.get("name", "")) > name_space)
-            lines, top, header_height, body_height = ui.frame(
+            scrolling = scrolling or bool(hover_key and ui.cell_width(hovered.get("name", "")) >
+                                          ui.row_name_width(hovered, winsize[0]))
+            lines, top, header_height, body_height, hit_rows = ui.frame(
                 rows, sessions, cursor, top, winsize[0], winsize[1], focused,
-                _t.monotonic() - scroll_since)
+                _t.monotonic() - scroll_since, return_hits=True,
+                hover_ref=hover_ref, hover_elapsed=_t.monotonic() - hover_since)
+            last_redraw_rows = rows
             if editing and lines:
                 prompt = "Rename " + ("conversation" if editing["kind"] == "pane" else editing["kind"])
                 visible_edit = edit_text
@@ -601,16 +634,30 @@ def cmd_sidebar(args):
             # no flashing terminal or jumping footer on status changes.
             sys.stdout.write("\x1b[H" + "\r\n".join(lines))
             sys.stdout.flush()
-            r, _, _ = select.select([fd], [], [], .15 if scrolling else 1.0)
-            if not r:
-                continue
-            try:
-                data = os.read(fd, 4096).decode("utf-8", "replace")
-            except OSError:
-                break
-            if not data:
-                break
-            for key in ui.parse_input(data):
+            timeout = .05 if decoder.pending else .15 if scrolling else 1.0
+            r, _, _ = select.select([fd, wake_read], [], [], timeout)
+            if wake_read in r:
+                try:
+                    os.read(wake_read, 4096)
+                except BlockingIOError:
+                    pass
+                next_poll = 0
+            if fd not in r:
+                keys = decoder.feed(flush=True) if decoder.pending else []
+            else:
+                try:
+                    data = os.read(fd, 4096).decode("utf-8", "replace")
+                except OSError:
+                    break
+                if not data:
+                    break
+                keys = decoder.feed(data)
+            for key in keys:
+                if isinstance(key, tuple) and key[1] & 32:
+                    if not editing:
+                        hover_ref = ui.hover_target(last_redraw_rows, hit_rows, winsize[0], key)
+                    continue
+                hover_ref = None
                 if editing:
                     if key == "esc" or key == "\x03":
                         editing = None
@@ -631,11 +678,11 @@ def cmd_sidebar(args):
                 if key in ("r", "R") and rows and rows[cursor]["kind"] in ("session", "window", "pane"):
                     chosen = rows[cursor]
                     if key == "R":
-                        candidates = [row for row in rows if row["kind"] == "window"
-                                      and row.get("sess_id") == chosen.get("sess_id")]
-                        chosen = next((row for row in candidates if row["ref"] == chosen.get("win_id")),
-                                      next((row for row in candidates if row.get("current")),
-                                           next(iter(candidates), None)))
+                        windows = [window for session in sessions if session["id"] == chosen.get("sess_id")
+                                   for window in session.get("windows", [])]
+                        window = next((w for w in windows if w["id"] == chosen.get("win_id")),
+                                      next((w for w in windows if w.get("active")), next(iter(windows), None)))
+                        chosen = {"kind": "window", "ref": window["id"], "name": window.get("name", "")} if window else None
                     if chosen:
                         editing = dict(chosen)
                         edit_text = editing.get("custom_name") or editing.get("name", "")
@@ -645,16 +692,23 @@ def cmd_sidebar(args):
                     _k, b, x, y, rel = key
                     if not rel and b in (64, 65):
                         cursor = ui.move_selection(rows, cursor, "up" if b == 64 else "down")
+                        if rows and rows[cursor]["kind"] == "session":
+                            project_id = rows[cursor]["ref"]
+                            rows = ui.build_rows(sessions, project_id)
                     if not rel and b == 0 and last_redraw_rows:
-                        local_y = y - header_height - 1
-                        idx = top + local_y
-                        if 0 <= local_y < body_height and 0 <= idx < len(last_redraw_rows):
-                            if last_redraw_rows[idx]["kind"] == "spacer":
-                                continue
-                            cursor = idx
-                            do_activate(prefix, paths, last_redraw_rows[cursor],
-                                        origin_session, origin_client)
+                        idx = hit_rows.get(y)
+                        if idx is not None and 0 <= idx < len(last_redraw_rows):
+                            chosen = last_redraw_rows[idx]
+                            project_id = chosen.get("sess_id", project_id)
+                            do_activate(prefix, paths, chosen, origin_session, origin_client)
+                            next_poll = 0
                             sessions = build_sessions(prefix, paths, selected)
+                            rows = ui.build_rows(sessions, project_id)
+                            cursor = next((i for i, row in enumerate(rows) if row["ref"] == chosen["ref"]), 0)
+                    continue
+                if key == "?":
+                    from lib.popups import open_popup
+                    open_popup(prefix, paths, "help", origin_client)
                     continue
                 if key in ("q", "esc"):
                     # q returns focus and keeps the sidebar alive (the
@@ -666,10 +720,13 @@ def cmd_sidebar(args):
                     if rows:
                         do_activate(prefix, paths, rows[cursor],
                                     origin_session, origin_client)
+                        next_poll = 0
                     continue
                 if key == "d" and rows:
                     chosen = rows[cursor]
                     if chosen["kind"] == "pane":
+                        if chosen.get("sess_id") != origin_session or chosen.get("win_id") != run_tmux(prefix, "display-message", "-p", "#{window_id}")[1].strip():
+                            do_activate(prefix, paths, chosen, origin_session, origin_client)
                         cmd_diff(argparse.Namespace(socket="", socket_path="", pane=chosen["ref"],
                                                     window=chosen.get("win_id", "")), prefix)
                     continue
@@ -679,20 +736,28 @@ def cmd_sidebar(args):
                     if chosen.get("kind") == "window":
                         target = chosen["ref"]
                     if chosen.get("kind") == "session":
-                        target = next((r["ref"] for r in rows if r["kind"] == "window"
-                                       and r.get("sess_id") == chosen["ref"]), "")
+                        target = next((w["id"] for session in sessions if session["id"] == chosen["ref"]
+                                       for w in session.get("windows", [])), "")
                     do_menu(prefix, target, os.environ.get("TMUX_PANE", ""))
                     continue
                 new = ui.move_selection(rows, cursor, key)
                 if isinstance(new, int):
                     cursor = new
+                    if rows and rows[cursor]["kind"] == "session":
+                        project_id = rows[cursor]["ref"]
+                        rows = ui.build_rows(sessions, project_id)
     finally:
+        signal.set_wakeup_fd(previous_wakeup)
+        os.close(wake_read)
+        os.close(wake_write)
+        if 'previous_winch' in locals():
+            signal.signal(signal.SIGWINCH, previous_winch)
         try:
             os.set_blocking(sys.stdout.fileno(), False)
         except Exception:
             pass
         try:
-            sys.stdout.write("\x1b[?1000l\x1b[?1006l\x1b[?25h\x1b[?1049l")
+            sys.stdout.write("\x1b[?1003l\x1b[?1000l\x1b[?1006l\x1b[?25h\x1b[?1049l")
             sys.stdout.flush()
         except Exception:
             pass
@@ -741,6 +806,14 @@ def do_activate(prefix, paths, row, origin_session="", client=""):
         rc, _, _ = run_tmux(prefix, *argv)
         if rc != 0:
             return rc
+    for pane in list_all(prefix):
+        if pane.get("sidebar") and pane["pid"] > 0 and pane["session_id"] == row.get("sess_id"):
+            if row.get("win_id") and pane["window_id"] != row["win_id"]:
+                continue
+            try:
+                os.kill(pane["pid"], signal.SIGWINCH)
+            except OSError:
+                pass
     return 0
 
 
@@ -941,6 +1014,8 @@ HOOK_LINES = [
 # Prefix x/o/C and all other defaults are left untouched.
 KEY_LINES = [
     ('root', 'M-e', 'run-shell \'__BASE__ __SOCK__ focus --window "#{window_id}" --pane "#{pane_id}\''),
+    ('prefix', 's', 'run-shell \'__BASE__ __SOCK__ sessions\''),
+    ('prefix', '?', 'run-shell \'__BASE__ __SOCK__ help\''),
     ('prefix', 'S', 'run-shell \'__BASE__ __SOCK__ toggle --window "#{window_id}"\''),
     ('prefix', 'v', 'run-shell \'__BASE__ __SOCK__ diff --window "#{window_id}" --pane "#{pane_id}"\''),
     ('prefix', 'a', 'run-shell \'__BASE__ __SOCK__ menu --window "#{window_id}" --pane "#{pane_id}"\''),
@@ -1142,10 +1217,13 @@ def cmd_install(args):
     block += "run-shell " + quote(shellbase + " capture-baseline --hook-index " + str(idx)) + "\n"
     block += "run-shell -b " + quote(shellbase + " daemon-start") + "\n"
     for table, key, action in (("root", "M-e", "focus"), ("prefix", "S", "toggle"),
-                               ("prefix", "a", "menu"), ("prefix", "v", "diff")):
+                               ("prefix", "a", "menu"), ("prefix", "v", "diff"),
+                               ("prefix", "s", "sessions"), ("prefix", "?", "help")):
         command = shellbase + " " + action + " --window '#{window_id}'"
         if action != "toggle":
             command += " --pane '#{pane_id}'"
+        if action in ("sessions", "help"):
+            command += " --client '#{client_name}'"
         block += "bind-key -T %s %s run-shell %s\n" % (table, key, quote(command))
     block += "\n"
     saved_theme = meta.get("saved_theme", {})
@@ -1296,12 +1374,14 @@ def main(argv=None):
     sub.add_parser("sidebar"); sub.add_parser("ensure")
     h = sub.add_parser("hide"); h.add_argument("--all-windows", action="store_true")
     h.add_argument("--window", default="")
-    for name in ("toggle", "focus", "menu", "diff"):
+    for name in ("toggle", "focus", "menu", "diff", "sessions", "help"):
         p = sub.add_parser(name)
         p.add_argument("--window", default="")
         p.add_argument("--pane", default="")
         if name == "diff":
             p.add_argument("--directory", default="", help="Git checkout to show (default: terminal cwd)")
+        if name in ("sessions", "help"):
+            p.add_argument("--client", default="")
     rn = sub.add_parser("rename", help="rename a sidebar conversation, session or window")
     targets = rn.add_mutually_exclusive_group()
     targets.add_argument("--pane")
@@ -1309,6 +1389,9 @@ def main(argv=None):
     targets.add_argument("--window")
     rn.add_argument("--reset", action="store_true", help="restore automatic conversation title")
     rn.add_argument("name", nargs="?")
+    popup = sub.add_parser("popup", help=argparse.SUPPRESS)
+    popup.add_argument("--kind", choices=("sessions", "help"), required=True)
+    popup.add_argument("--client", required=True)
     dv = sub.add_parser("diff-view", help=argparse.SUPPRESS)
     dv.add_argument("--target", required=True)
     sub.add_parser("status"); sub.add_parser("install")
@@ -1360,6 +1443,12 @@ def main(argv=None):
     elif args.command == "menu":
         do_menu(P(args), getattr(args, "window", ""),
                 getattr(args, "pane", ""))
+    elif args.command in ("sessions", "help"):
+        from lib.popups import open_popup
+        sys.exit(open_popup(P(args), paths_of(args), args.command, args.client))
+    elif args.command == "popup":
+        from lib.popups import run
+        run(P(args), paths_of(args), args.kind, args.client, build_sessions)
     elif args.command == "diff":
         sys.exit(cmd_diff(args) or 0)
     elif args.command == "diff-view":

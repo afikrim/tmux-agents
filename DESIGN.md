@@ -5,6 +5,7 @@ colors:
   bg: "#11151f"
   panel: "#1b2332"
   selected: "#283b4a"
+  hover: "#223140"
   fg: "#e4eaf4"
   muted: "#96a6bd"
   line: "#38465d"
@@ -31,7 +32,7 @@ spacing:
 ---
 
 ## Overview
-Mode: Operate. Keep the Corgi-style sessions/windows/agents hierarchy and
+Mode: Operate. Keep the two-section project/agent layout and
 make waiting agents easy to find. Borrow the segmented status-line vocabulary
 of Powerlevel10k and the restrained pastel contrast seen in Awesome tmux themes.
 
@@ -48,10 +49,15 @@ symbol fallback. Actual Powerlevel10k requires zsh; keep the existing shell
 unless the user explicitly chooses to switch it.
 
 ## Layout
-Fixed-width left rail; one blank line between sessions; four lines of header;
-footer anchored to the bottom. Short terminals collapse header/footer chrome.
-Measure Unicode text in terminal cells. Sidebar click coordinates follow the
-same header/body geometry used to render the frame.
+Fixed-width left rail with project sessions above the selected project's agent
+windows. The agents block is anchored to the bottom and capped at half the sidebar
+height, including its heading and divider. It shrinks to its contents when
+shorter; projects use the space above. Each section scrolls independently. One row per
+window, with a stable real-pane target for activation. Section headings and a
+single divider carry the hierarchy. Shortcut hints live in a searchable popup,
+not permanent footers. Native centered popups inherit the Ink / Mint palette
+and terminal font. Mouse coordinates use explicit rendered-row maps.
+Measure Unicode text in terminal cells.
 
 ## Elevation & Depth
 Use solid tonal surfaces. The active window and focused row have distinct
@@ -62,11 +68,14 @@ Square terminal geometry with Powerline separators in the tmux status bar.
 No emoji-based navigation or dependency on decorative sidebar icons.
 
 ## Components
-Session headings are bold, pane IDs stay internal, and status labels
-align to the right. The idle sidebar highlights current context; the focused
-sidebar highlights the keyboard target. Spacer rows and window-name context rows are not keyboard stops. Keyboard
-navigation targets sessions and real terminal panes; window rows remain
-available for mouse selection.
+Project names identify sessions; agent rows show conversation/program names
+and right-aligned status text. The current project is accented; keyboard
+selection gets the focused background. Agent titles scroll when focused and
+clipped. A project cursor previews that project's windows before activation.
+Pointer hover uses a subtler background and scrolls clipped titles without
+moving keyboard selection, switching projects, or taking terminal focus.
+Ctrl-b s opens the project picker; ? opens contextual shortcut help. These
+popups search and scroll without creating real panes.
 
 ## Do's and Don'ts
 - Do preserve status-source confidence and all navigation controls.

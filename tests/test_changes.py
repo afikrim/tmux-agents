@@ -126,7 +126,7 @@ class ChangeTest(unittest.TestCase):
         self.assertEqual(start, panned)
         end, top = diffpane.frame(data, 12, 10, top=999, wrap=True)
         self.assertGreater(top, 0)
-        self.assertEqual(strip(end)[-3].strip(), rows[-1][0].strip())
+        self.assertEqual(strip(end)[-1].strip(), rows[-1][0].strip())
 
     def test_frame_dimensions_colors_and_empty_state(self):
         data = ('Latest turn', 'repo', 'Checkpoint 12:00', ['diff -- file', '@@ -1 +1 @@', '-old', '+new'], 1)

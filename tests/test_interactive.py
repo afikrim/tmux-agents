@@ -31,7 +31,7 @@ ta = importlib.util.module_from_spec(SPEC)
 _loader.exec_module(ta)
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b[()][0-9A-Z]")
-PANE_RE = re.compile(r"^   [ >] (?:shell|codex|claude|opencode)\s+(?:Running|Input|Approval|Question|Done|Idle|Unknown)[=#~?]?\s*$")
+PANE_RE = re.compile(r"^   [ >] .*?\s+(?:Running|Input|Approval|Question|Done|Idle|Unknown)[=#~?]?\s*$")
 
 
 def T(*args, timeout=10):
@@ -100,7 +100,7 @@ class SidebarPTYTest(unittest.TestCase):
         T("kill-server")
         shutil.rmtree(cls.home, ignore_errors=True)
 
-    def spawn_sidebar(self):
+    def spawn_sidebar(self, observing_pane=None):
         master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 50, 80, 0, 0))
         env = dict(os.environ)
@@ -108,6 +108,8 @@ class SidebarPTYTest(unittest.TestCase):
         env.pop("TMUX", None)
         env.pop("TMUX_PANE", None)
         env["TERM"] = "xterm-256color"
+        if observing_pane:
+            env["TMUX_PANE"] = observing_pane
         proc = subprocess.Popen(
             [sys.executable, BIN, "--socket", SOCK, "sidebar"],
             stdin=slave, stdout=slave, stderr=subprocess.DEVNULL,
@@ -240,6 +242,69 @@ class SidebarPTYTest(unittest.TestCase):
         finally:
             self.close(proc, master)
             T("set-option", "-pu", "-t", pane, "@tmux_agents_name")
+
+    def test_project_keyboard_preview_changes_agents_without_switching_session(self):
+        T("new-session", "-d", "-s", "zz-project", "-n", "review", "sleep", "30")
+        proc, master = self.spawn_sidebar()
+        try:
+            drain(master, 1.5)
+            os.write(master, b"g")
+            first = ANSI_RE.sub("", drain(master, .8).decode())
+            self.assertIn("Agents / pty1", first)
+            self.assertIn("other", first)
+            before = T("display-message", "-p", "#{session_id}").stdout.strip()
+            os.write(master, b"j")
+            second = ANSI_RE.sub("", drain(master, .8).decode())
+            self.assertIn("Agents / zz-project", second)
+            self.assertNotIn("other", second)
+            self.assertEqual(T("display-message", "-p", "#{session_id}").stdout.strip(), before)
+        finally:
+            self.close(proc, master)
+            T("kill-session", "-t", "zz-project")
+
+    def test_selection_follows_external_clicks_and_keeps_focused_keyboard_preview(self):
+        import signal
+        topology = [line.split('|') for line in T('list-panes','-s','-t','pty1','-F',
+                     '#{pane_id}|#{window_id}|#{@tmux_agents_sidebar}').stdout.splitlines()]
+        real = [row for row in topology if row[2] != '1']
+        first, second = real[:2]
+        observer = next(row[0] for row in topology if row[1] == second[1] and row[2] == '1')
+        T('select-pane','-t',second[0])
+        T('select-window','-t',first[1])
+        T('select-pane','-t',first[0])
+        proc, master = self.spawn_sidebar(observer)
+        def selected_ref(raw):
+            text = ANSI_RE.sub('', raw.decode('utf-8','replace').rsplit('\x1b[H',1)[-1]).splitlines()
+            return next((ref for y,kind,ref in visible_rows(raw)
+                         if kind == 'pane' and text[y-1].startswith('   >')), None)
+        try:
+            output, deadline = b'', time.monotonic() + 4
+            while time.monotonic() < deadline:
+                output += drain(master,.3)
+                if selected_ref(output) == first[0]:
+                    break
+            self.assertEqual(selected_ref(output),first[0],output.decode('utf-8','replace'))
+            T('select-window','-t',second[1])
+            T('select-pane','-t',second[0])
+            os.kill(proc.pid,signal.SIGWINCH)
+            self.assertEqual(selected_ref(drain(master,.6)),second[0])
+            T('select-pane','-t',observer)
+            os.kill(proc.pid,signal.SIGWINCH)
+            drain(master,.4)
+            os.write(master,b'g')
+            preview=ANSI_RE.sub('',drain(master,.5).decode())
+            self.assertIn('> pty1',preview)
+            os.kill(proc.pid,signal.SIGWINCH)
+            self.assertIn('> pty1',ANSI_RE.sub('',drain(master,.4).decode()))
+            # This sidebar's pane remains active within its old window, but
+            # another window is now visible: pane_active alone is insufficient.
+            T('select-window','-t',first[1])
+            T('select-pane','-t',first[0])
+            os.kill(proc.pid,signal.SIGWINCH)
+            self.assertEqual(selected_ref(drain(master,.6)),first[0])
+        finally:
+            self.close(proc,master)
+            T('select-pane','-t',second[0])
 
     def test_activation_plan_cross_session_exact(self):
         # Pure plan: exact argv including origin client, then executed for real

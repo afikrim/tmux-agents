@@ -69,44 +69,37 @@ def pane_name(custom, title, agent, cwd="", program=""):
     return "shell"
 
 
-def build_rows(sessions):
-    """sessions: [{id,name,attached,windows:[{id,index,name,active,panes:[{id,agent,status,source,current}]}]}]
-    Returns [Row...]; Row = dict(kind, label, target, depth, ref)."""
-    rows = []
-    for s in sessions:
-        if rows:
-            rows.append({"kind": "spacer", "depth": 0, "ref": "gap:" + s["id"],
-                         "label": "", "target": ("spacer", "")})
-        cur = "*" if s.get("attached") else " "
-        rows.append({"kind": "session", "depth": 0, "ref": s["id"],
-                     "sess_id": s["id"], "name": s["name"], "current": s.get("attached", False),
-                     "label": san("%s%s" % (cur, s["name"]), 0),
-                     "target": ("session", s["id"])})
-        for w in s.get("windows", []):
-            wcur = ">" if w.get("active") else " "
-            rows.append({"kind": "window", "depth": 1, "ref": w["id"],
-                         "sess_id": s["id"], "name": w.get("name", ""), "index": str(w.get("index", "")),
-                         "current": s.get("attached", False) and w.get("active", False),
-                         "focus_pane": next((p["id"] for p in w.get("panes", []) if p.get("current")),
-                                            next(iter(w.get("panes", [])), {}).get("id", "")),
-                         "label": san("%s%s:%s" % (wcur, w.get("index"), w.get("name")), 0),
-                         "target": ("window", w["id"])})
-            for p in w.get("panes", []):
-                tag, _c = STATUS_STYLE.get(p.get("status", "unknown"),
-                                           STATUS_STYLE["unknown"])
-                sm = SOURCE_MARK.get(p.get("source", ""), "?")
-                sel = "+" if p.get("selected") else " "
-                cur2 = "<" if p.get("current") else " "
-                rows.append({
-                    "kind": "pane", "depth": 2, "ref": p["id"],
-                    "win_id": w["id"], "sess_id": s["id"],
-                    "label": san("%s%s [%s%s]%s" % (
-                        sel, p.get("display_name") or p.get("agent") or "shell", tag, sm, cur2), 0),
-                    "target": ("pane", p["id"]),
-                    "name": p.get("display_name") or p.get("agent") or "shell",
-                    "custom_name": p.get("custom_name", ""), "agent": p.get("agent", ""), "current": p.get("current") and s.get("attached", False),
-                    "status": p.get("status", "unknown"),
-                    "source": p.get("source", "")})
+def build_rows(sessions, project_id=None):
+    """Projects first, then one active-terminal entry per selected project window."""
+    project = next((s for s in sessions if s["id"] == project_id),
+                   next((s for s in sessions if s.get("attached")), next(iter(sessions), None)))
+    rows = [{"kind": "session", "depth": 0, "ref": s["id"], "sess_id": s["id"],
+             "name": s["name"], "label": san(s["name"], 0),
+             "current": s.get("attached", False), "project_selected": s is project,
+             "target": ("session", s["id"])} for s in sessions]
+    rows.append({"kind": "section", "depth": 0, "ref": "section:agents", "label": "Agents",
+                 "name": project["name"] if project else "", "target": ("section", "")})
+    for window in project.get("windows", []) if project else []:
+        panes = window.get("panes", [])
+        if not panes:
+            continue
+        pane = next((p for p in panes if p.get("agent") and p.get("current")),
+                    next((p for p in panes if p.get("agent")),
+                         next((p for p in panes if p.get("current")), panes[0])))
+        name = pane.get("display_name") or pane.get("agent") or "shell"
+        if name == "shell" and not pane.get("custom_name"):
+            title = window.get("name", "")
+            name = title if title.lower() not in ("", "sh", "bash", "zsh", "fish", "dash") else "Terminal"
+        tag, _ = STATUS_STYLE.get(pane.get("status", "unknown"), STATUS_STYLE["unknown"])
+        source = SOURCE_MARK.get(pane.get("source", ""), "?")
+        rows.append({"kind": "pane", "depth": 1, "ref": pane["id"],
+                     "sess_id": project["id"], "win_id": window["id"],
+                     "window_name": window.get("name", ""), "window_index": window.get("index", ""),
+                     "focus_pane": pane["id"], "target": ("pane", pane["id"]),
+                     "name": name, "label": san("%s [%s%s]" % (name, tag, source), 0),
+                     "current": project.get("attached", False) and window.get("active", False),
+                     "custom_name": pane.get("custom_name", ""), "agent": pane.get("agent", ""),
+                     "status": pane.get("status", "unknown"), "source": pane.get("source", "")})
     return rows
 
 
@@ -178,15 +171,19 @@ def row_name_width(row, width):
     return max(0, width - cell_width(tag.title() + source) - 7)
 
 
-def row_line(row, selected, width, focused=True, scroll_elapsed=0.0):
+def row_line(row, selected, width, focused=True, scroll_elapsed=0.0,
+             hovered=False, hover_elapsed=0.0):
     kind = row["kind"]
-    background = "selected" if selected and focused else "panel" if row.get("current") and kind == "window" else "bg"
-    marker = ">" if selected and focused else " "
+    background = ("selected" if selected and focused else "hover" if hovered
+                  else "panel" if row.get("current") else "bg")
+    marker = ">" if selected and (focused or row.get("current")) else " "
     def name_text(name):
         space = row_name_width(row, width)
+        if hovered:
+            return scroll_text(name, space, hover_elapsed)
         return scroll_text(name, space, scroll_elapsed) if selected and focused else fit(name, space)
-    if kind == "spacer":
-        return styled("", width)
+    if kind in ("spacer", "section"):
+        return styled(" " + row.get("label", ""), width, "accent" if kind == "section" else "fg")
     if kind == "session":
         name = row.get("name", row["label"]).strip()
         right = "current" if row.get("current") else ""
@@ -205,7 +202,7 @@ def row_line(row, selected, width, focused=True, scroll_elapsed=0.0):
     left = "   " + marker + " " + name_text(name)
     right = tag.title() + source
     available = max(0, width - cell_width(right) - 2)
-    return (RESET + theme.bg(background) + theme.fg("muted" if not row.get("agent") and name == "shell" else "fg")
+    return (RESET + theme.bg(background) + theme.fg("muted" if not row.get("agent") and name in ("shell", "Terminal") else "fg")
             + fit(left, available) + color + fit(" " + right + " ", width - available)
             + RESET + BASE)
 
@@ -221,33 +218,82 @@ def render_rows(rows, cursor, top, height, width, focused=True, scroll_elapsed=0
             for i in range(top, min(top + height, len(rows)))], top
 
 
-def header_lines(sessions, width, height=24):
-    title = "tmux agents"
-    agents = sum(bool(p.get("agent")) for s in sessions for w in s.get("windows", []) for p in w.get("panes", []))
-    if height < 10:
-        return [styled(" " + title, width, "accent", bold=True)]
-    return [styled("", width), styled(" " + title, width, "accent", bold=True),
-            styled(" %d sessions / %d agents" % (len(sessions), agents), width, "muted"),
-            styled("", width)]
+def selection_index(rows, previous_ref=None, focused=True):
+    """Keep keyboard browsing stable; otherwise follow the live active window."""
+    if focused and previous_ref is not None:
+        found = next((i for i, row in enumerate(rows)
+                      if row.get("ref") == previous_ref and row["kind"] in ("session", "pane")), None)
+        if found is not None:
+            return found
+    return next((i for i, row in enumerate(rows) if row["kind"] == "pane" and row.get("current")),
+                next((i for i, row in enumerate(rows) if row["kind"] == "session" and row.get("current")),
+                     next((i for i, row in enumerate(rows) if row["kind"] in ("session", "pane")), 0)))
 
 
-def footer_lines(width, n_rows=0):
-    return [styled(" " + "─" * max(0, width - 2), width, "line"),
-            styled(" enter open  x agent  d diff", width, "muted"),
-            styled(" r rename   j/k move   q back", width, "muted"),
-            styled(" = native  # screen  ~ observed", width, "muted")]
+def hover_target(rows, hits, width, key):
+    """Only unpressed pointer motion can hover a rendered, selectable row."""
+    if not isinstance(key, tuple) or len(key) != 5:
+        return None
+    kind, button, x, y, released = key
+    if kind != "mouse" or released or (button & ~28) != 35 or not 1 <= x <= width:
+        return None
+    index = hits.get(y)
+    if index is not None and 0 <= index < len(rows):
+        row = rows[index]
+        if row["kind"] in ("session", "pane"):
+            return row["ref"]
+    return None
 
 
-def frame(rows, sessions, cursor, top, width, height, focused=True, scroll_elapsed=0.0):
-    """A complete, fixed-height frame: footer remains anchored, never scrolls."""
+def frame(rows, sessions, cursor, top, width, height, focused=True, scroll_elapsed=0.0, return_hits=False,
+          hover_ref=None, hover_elapsed=0.0):
+    """Two independently scrolled sections with an explicit mouse hit map."""
     width, height = max(1, width), max(1, height)
-    header = header_lines(sessions, width, height)
-    footer = footer_lines(width, len(rows)) if height >= 10 else [styled(" enter open / q back", width, "muted")]
-    body_height = max(0, height - len(header) - len(footer))
-    body, top = render_rows(rows, cursor, top, body_height, width, focused, scroll_elapsed)
-    body += [styled("", width)] * (body_height - len(body))
-    lines = (header + body + footer)[:height]
-    return lines, top, len(header), body_height
+    offsets = dict(top) if isinstance(top, dict) else {"projects": 0, "agents": 0}
+    projects = [i for i, row in enumerate(rows) if row["kind"] == "session"]
+    agents = [i for i, row in enumerate(rows) if row["kind"] == "pane"]
+    section = next((row for row in rows if row["kind"] == "section"), {})
+    lines, hits = [], {}
+    def add(text):
+        if len(lines) < height:
+            lines.append(text)
+    def group(indices, count, key):
+        count = max(0, count)
+        start = offsets.get(key, 0)
+        selected = next((pos for pos, index in enumerate(indices) if index == cursor), None)
+        if selected is None and key == "projects":
+            selected = next((pos for pos, index in enumerate(indices) if rows[index].get("project_selected")), None)
+        if selected is not None:
+            if selected < start:
+                start = selected
+            elif selected >= start + count:
+                start = max(0, selected - count + 1)
+        start = max(0, min(start, max(0, len(indices) - count)))
+        offsets[key] = start
+        for index in indices[start:start + count]:
+            hits[len(lines) + 1] = index
+            add(row_line(rows[index], index == cursor, width, focused, scroll_elapsed,
+                         rows[index]["ref"] == hover_ref, hover_elapsed))
+    # Keep a compact agents block against the bottom. Its heading/divider
+    # count toward the half-height cap; tiny terminals retain one useful row.
+    agent_limit = min(max(0, height - 1), max(3, height // 2))
+    agent_count = min(max(1, len(agents)), max(0, agent_limit - 2))
+    agent_height = 2 + agent_count if agent_count else 0
+    add(styled(" Projects / %d" % len(projects), width, "accent", bold=True))
+    project_count = min(len(projects), max(0, height - agent_height - 1))
+    group(projects, project_count, "projects")
+    while len(lines) < height - agent_height:
+        add(styled("", width))
+    if agent_height:
+        add(styled(" " + "─" * max(0, width - 2), width, "line"))
+        add(styled(" Agents / " + section.get("name", ""), width, "accent", bold=True))
+        if agents:
+            group(agents, agent_count, "agents")
+        else:
+            add(styled(" No terminals in this project", width, "muted"))
+    lines.extend(styled("", width) for _ in range(height - len(lines)))
+    result = (lines, offsets, 0, height)
+    return result + (hits,) if return_hits else result
 
 
 def move_cursor(n_rows, cursor, key):
@@ -284,6 +330,24 @@ def move_selection(rows, cursor, key):
 
 
 MOUSE_RE = re.compile(r"\x1b\[<(\d+);(\d+);(\d+)([mM])")
+
+
+class InputDecoder:
+    """Keep partial terminal escape packets out of keyboard shortcuts."""
+    def __init__(self):
+        self.pending = ""
+
+    def feed(self, data="", flush=False):
+        data, self.pending = self.pending + data, ""
+        fragment = re.search(r"\x1b(?:\[(?:<[0-9;]*|[0-9;]*))?$", data)
+        if fragment:
+            tail, data = data[fragment.start():], data[:fragment.start()]
+            if not flush:
+                self.pending = tail
+            elif tail == "\x1b":
+                data += tail
+            # Drop timed-out partial CSI, never interpret its payload as keys.
+        return parse_input(data)
 
 
 def parse_input(data):

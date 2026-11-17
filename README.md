@@ -1,7 +1,7 @@
 # tmux-agents
 
 An always-visible, Corgi-inspired workspace sidebar inside tmux. It lists
-sessions, windows and agent panes, with live status for Codex, Claude Code
+projects (tmux sessions) above agent windows, with live status for Codex, Claude Code
 and OpenCode. Your agents keep their own interactive terminals.
 
 ## Controls
@@ -9,19 +9,43 @@ and OpenCode. Your agents keep their own interactive terminals.
 | Control | Action |
 | --- | --- |
 | Alt-e | Focus the sidebar in this window |
+| Ctrl-b, s | Search and switch projects in a popup |
 | Ctrl-b, S | Hide/show the sidebar in this window |
+| Ctrl-b, ? | Open the shortcut reference popup |
 | Ctrl-b, a | Open the new-agent menu |
 | Ctrl-b, v | Toggle the right-hand diff pane |
 | d (in sidebar) | Toggle diff for the selected terminal |
-| Click a row / Enter | Switch to that session, window or pane |
-| j/k, arrows, mouse wheel | Move through the tree |
+| Click a row / Enter | Switch to the project or agent window |
+| Hover a row | Highlight it and scroll its long title, keeping terminal focus |
+| j/k, arrows, mouse wheel | Move through projects and agent windows |
 | g/G, Page Up/Down | Navigate a long tree |
 | x (in sidebar) | Start an agent in the selected workspace |
 | r / Shift-r (in sidebar) | Rename selection / its window |
+| ? (in sidebar or diff) | Open the shortcut popup |
 | q / Escape | Return focus to the previous terminal |
 
-Window names remain visible as context labels; Up/Down, j/k and the mouse
-wheel skip them and move between sessions and agent/shell panes.
+The sidebar has two sections: **Projects** on top and **Agents** below.
+Moving through projects previews only that project's windows; Enter switches
+to the project. Each window appears once, labelled with its active agent,
+conversation, or foreground program. Normal tmux splits remain accessible
+through tmux's pane controls. The agents section sits against the bottom and
+is capped at half the sidebar height, including its heading. Longer lists
+scroll within that space; projects use the space above. Both sections scroll
+independently. The selector follows the active window after mouse navigation;
+keyboard browsing stays independent while the sidebar is focused.
+
+Mouse hover uses standard SGR all-motion reporting, supported by Kitty and
+other compatible terminals through tmux, with no Kitty configuration needed.
+Hovering keeps your current project, window and keyboard selection unchanged.
+The subtle hover background is separate from the active-window arrow. Hover
+clears on blank sidebar space, sidebar input, resize or window changes.
+Tmux does not reliably forward a pane-leave event: the last hover can remain
+when the pointer leaves the sidebar until one of those events occurs.
+
+Permanent shortcut hints are hidden from the navigation and diff panes. Press **?**
+inside either panel, or **Ctrl-b, ?** anywhere, for the searchable shortcut
+popup. **Ctrl-b, s** opens the matching project picker: type to search, use
+arrows to select, Enter to switch, and Escape to cancel.
 
 The launcher opens a **new window** in the selected workspace's directory.
 When its last real terminal exits, the owned navigation pane is removed so
@@ -48,7 +72,7 @@ Focus the sidebar with Alt-e, select a row, and press `r`. Edit its name,
 then press Enter to save or Escape to cancel. Ctrl-U clears the field.
 Saving an empty conversation name restores its automatic title. Session and
 window names cannot be empty. Press Shift-r (`R`) to rename the selected
-conversation’s window while keeping window labels skipped by arrow keys.
+conversation’s window.
 
 Custom conversation names label the tmux pane; they do not rename the chat
 inside the agent. They remain until reset or that pane is closed, including

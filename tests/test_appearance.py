@@ -22,19 +22,47 @@ class AppearanceTest(unittest.TestCase):
             rgb=[v/12.92 if v<=.04045 else ((v+.055)/1.055)**2.4 for v in rgb]
             return sum(v*c for v,c in zip(rgb,(.2126,.7152,.0722)))
         for foreground in ('fg','muted','accent','amber','rose','blue'):
-            for background in ('bg','panel','selected'):
+            for background in ('bg','panel','selected','hover'):
                 a,b=sorted((lum(theme.PALETTE[foreground]),lum(theme.PALETTE[background])))
                 self.assertGreaterEqual((b+.05)/(a+.05),4.5,(foreground,background))
 
-    def test_session_spacing_is_not_a_keyboard_stop(self):
-        rows=ui.build_rows([{"id":"$1","name":"one","windows":[]},
-                            {"id":"$2","name":"two","windows":[]}])
-        self.assertEqual(rows[1]["kind"],"spacer")
-        self.assertEqual(ui.move_selection(rows,0,'j'),2)
-        self.assertEqual(ui.move_selection(rows,2,'k'),0)
+    def test_project_and_agent_sections_have_separate_hit_regions_and_no_hints(self):
+        sessions = [{"id":"$1", "name":"one", "attached":True,"windows":[
+            {"id":"@1","name":"work","panes":[{"id":"%1","agent":"codex","status":"running"}]}]},
+            {"id":"$2","name":"two","windows":[]}]
+        rows = ui.build_rows(sessions)
+        lines, offsets, header, body, hits = ui.frame(rows,sessions,3,0,32,20,return_hits=True)
+        plain = [ANSI.sub("", line) for line in lines]
+        self.assertIn("Projects", plain[0])
+        divider = next(i for i,line in enumerate(plain,1) if "──" in line)
+        self.assertTrue(all(y < divider for y,i in hits.items() if rows[i]["kind"] == "session"))
+        self.assertTrue(all(y > divider for y,i in hits.items() if rows[i]["kind"] == "pane"))
+        self.assertNotIn("enter open", "\n".join(plain))
+        self.assertEqual(ui.move_selection(rows,1,'j'),3)
+        self.assertEqual(ui.move_selection(rows,3,'k'),1)
 
     def test_label_controls_cannot_escape_the_frame(self):
         self.assertEqual(ui.fit('a\x1bb\x85c',4), 'abc ')
+
+    def test_agents_are_bottom_anchored_capped_and_scroll_to_selected_window(self):
+        sessions = [{"id":"$1", "name":"work", "attached":True, "windows":[
+            {"id":"@%d" % index, "name":"task", "panes":[
+                {"id":"%%%d" % index, "agent":"codex", "status":"running"}]}
+            for index in range(25)]}]
+        rows = ui.build_rows(sessions)
+        last = len(rows) - 1
+        lines, offsets, _, _, hits = ui.frame(rows,sessions,last,0,32,20,return_hits=True)
+        agent_hits = {y:i for y,i in hits.items() if rows[i]["kind"] == "pane"}
+        divider = next(y for y,line in enumerate(lines,1) if '──' in ANSI.sub('',line))
+        self.assertEqual(max(agent_hits), 20)
+        self.assertLessEqual(20 - divider + 1, 10)
+        self.assertEqual(agent_hits[20], last)
+        self.assertGreater(offsets['agents'], 0)
+        sessions[0]['windows'] = sessions[0]['windows'][:1]
+        rows = ui.build_rows(sessions)
+        lines, _, _, _, hits = ui.frame(rows,sessions,2,0,32,20,return_hits=True)
+        self.assertEqual([y for y,i in hits.items() if rows[i]['kind'] == 'pane'], [20])
+        self.assertIn('Agents / work', ANSI.sub('',lines[-2]))
 
     def test_focused_title_scrolls_with_fixed_status_and_unfocused_stays_still(self):
         row = {'kind': 'pane', 'ref': '%1', 'name': 'ABCDEFGHIJKLMNOQRSTUVWXYZ',
@@ -57,3 +85,29 @@ class AppearanceTest(unittest.TestCase):
                 shown = ui.scroll_text(text, 8, tick / 10)
                 self.assertEqual(ui.cell_width(shown), 8)
                 self.assertFalse(shown.startswith('\u0301'))
+
+    def test_hover_scrolls_without_replacing_active_or_keyboard_selection(self):
+        row = {'kind':'pane', 'ref':'%2', 'name':'ABCDEFGHIJKLMNOPQRSTUVWXYZ extra long',
+               'agent':'codex', 'status':'running'}
+        start = ui.row_line(row, False, 32, False, hovered=True)
+        later = ui.row_line(row, False, 32, False, hovered=True, hover_elapsed=3)
+        self.assertIn(theme.bg('hover'), start)
+        self.assertNotEqual(ANSI.sub('', start), ANSI.sub('', later))
+        self.assertEqual(ANSI.sub('', start)[-10:], ANSI.sub('', later)[-10:])
+        self.assertNotIn('>', ANSI.sub('', later))
+        row['current'] = True
+        active = ui.row_line(row, True, 32, False)
+        self.assertIn('>', ANSI.sub('', active))
+        self.assertIn(theme.bg('panel'), active)
+        self.assertIn(theme.bg('selected'), ui.row_line(row, True, 32, True, hovered=True))
+
+    def test_hover_hit_testing_rejects_drag_release_wheel_and_non_rows(self):
+        rows = [{'kind':'session','ref':'$1'}, {'kind':'pane','ref':'%1'}]
+        hits = {2:0, 20:1}
+        for button in (35, 39, 43, 51):
+            self.assertEqual(ui.hover_target(rows,hits,32,('mouse',button,5,20,False)), '%1')
+        for key in (('mouse',32,5,20,False), ('mouse',35,5,20,True),
+                    ('mouse',64,5,20,False), ('mouse',35,0,20,False),
+                    ('mouse',35,33,20,False), ('mouse',35,5,1,False),
+                    ('mouse',35,5,19,False), 'j'):
+            self.assertIsNone(ui.hover_target(rows,hits,32,key))

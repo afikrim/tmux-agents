@@ -85,7 +85,7 @@ def read_diff(prefix, paths, target, mode, save=False):
         hint = 'Checkpoint ' + time.strftime('%H:%M:%S', time.localtime(record['created']))
     else:
         label = 'Working tree'
-        hint = 'No turn checkpoint yet; b starts one now.' if mode == 'iteration' else 'Tracked + untracked changes against HEAD'
+        hint = 'No turn checkpoint; showing working tree.' if mode == 'iteration' else 'Tracked + untracked changes against HEAD'
     return label, os.path.basename(root), hint, lines, count
 
 
@@ -148,12 +148,11 @@ def display_rows(lines, width, wrap=False):
 def frame(data, width, height, top=0, horizontal=0, wrap=False, prepared=None):
     label, repo, hint, lines, count = data
     width, height = max(1, width), max(1, height)
-    header = [ui.styled(' changes', width, 'accent', bold=True),
+    header = [ui.styled(' changes / wrap:%s' % ('on' if wrap else 'off'), width, 'accent', bold=True),
               ui.styled(' %s / %s / %d files' % (label, repo, count), width),
               ui.styled(' ' + hint, width, 'muted'),
               ui.styled(' ' + '─' * max(0, width - 2), width, 'line')]
-    footer = [ui.styled(' tab turn/tree  b checkpoint  o repo', width, 'muted'),
-              ui.styled(' j/k scroll  h/l pan  w wrap:%s  q' % ('on' if wrap else 'off'), width, 'muted')]
+    footer = []
     body_height = max(0, height - len(header) - len(footer))
     rows = prepared if prepared is not None else display_rows(lines, width, wrap)
     top = min(max(0, top), max(0, len(rows) - body_height))
@@ -211,8 +210,8 @@ def run(prefix, paths, target):
                     try:
                         result = read_diff(prefix, paths, chosen, selected_mode, checkpoint)
                     except Exception as error:
-                        hint = 'Install Git to enable diffs.' if isinstance(error, FileNotFoundError) else 'Choose a Git repository with o.'
-                        result = ('Unavailable', '', hint, [str(error), '', 'o choose repository / q close'], 0)
+                        hint = 'Install Git to enable diffs.' if isinstance(error, FileNotFoundError) else 'Choose a Git repository.'
+                        result = ('Unavailable', '', hint, [str(error), '', 'Repository unavailable. Open shortcut help for settings.'], 0)
                     mailbox.put(((chosen, selected_mode), result))
                 worker = threading.Thread(target=update, args=(target, mode, save), daemon=True)
                 worker.start()
@@ -258,6 +257,10 @@ def run(prefix, paths, target):
                         edit_text = ''
                     elif isinstance(key, str) and len(key) == 1 and key.isprintable():
                         edit_text = (edit_text + key)[:4096]
+                    continue
+                if key == '?':
+                    from .popups import open_popup
+                    open_popup(prefix, paths, 'help')
                     continue
                 if key == 'o':
                     editing, edit_text, edit_error = True, '', ''
