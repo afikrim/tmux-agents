@@ -11,6 +11,8 @@ and OpenCode. Your agents keep their own interactive terminals.
 | Alt-e | Focus the sidebar in this window |
 | Ctrl-b, S | Hide/show the sidebar in this window |
 | Ctrl-b, a | Open the new-agent menu |
+| Ctrl-b, v | Toggle the right-hand diff pane |
+| d (in sidebar) | Toggle diff for the selected terminal |
 | Click a row / Enter | Switch to that session, window or pane |
 | j/k, arrows, mouse wheel | Move through the tree |
 | g/G, Page Up/Down | Navigate a long tree |
@@ -59,6 +61,55 @@ tmux-agents rename --pane %1 --reset            # automatic title
 tmux-agents rename --session '$1' "backend"
 tmux-agents rename --window @2 "tests"
 ```
+
+## Optional diff pane
+
+Press **Ctrl-b, v** to toggle a read-only diff pane on the right, or select
+an agent in the navigation and press **d**. Navigation stays on the left and
+the agent stays in the middle. The window must be at least 120 columns wide.
+No diff pane opens automatically.
+
+The default is **Latest turn**, when a checkpoint is available, with an
+explicit **Working tree** fallback. Once you enable this feature for a
+terminal, its native `UserPromptSubmit` events checkpoint the checkout at
+turn start. Claude/Codex hooks and OpenCode 2.x execution events feed this
+signal; Codex hook trust is still required. Existing in-progress turns cannot
+be reconstructed retroactively.
+
+Inside the diff pane:
+
+| Key | Action |
+| --- | --- |
+| Tab | Switch latest-turn / full working-tree diff |
+| b | Take a manual checkpoint; show changes from now |
+| o | Choose a Git repository; blank restores the terminal's current directory |
+| j/k, Page Up/Down, g/G | Scroll vertically |
+| h/l or Left/Right | Pan long lines when wrapping is off |
+| w | Toggle soft wrapping (remembered per window) |
+| r | Refresh now (otherwise updates automatically) |
+| q / Escape | Close the diff pane |
+
+The view follows the real terminal selected in the same window. Its default
+repository comes from that terminal's working directory. If your agent was
+started above several repositories, use **o** to choose one, or:
+
+```sh
+tmux-agents diff --directory /path/to/checkout
+```
+
+This compares tracked and non-ignored untracked files without stashing,
+staging, committing, or changing Git's index. A turn diff describes changes
+to the **checkout since its checkpoint**; simultaneous edits by other agents
+or people in the same checkout are included too.
+
+Checkpoints contain local copies of dirty files in the private per-server
+state directory (`diff/`, files mode 0600). They start only after you opt in
+by opening a diff pane, replace the previous checkpoint each turn, and are
+deleted on uninstall. Capture is limited to 300 paths, 1 MiB per file and
+16 MiB of content; oversized files and submodules are explicitly reported as
+omitted, and binary changes get a summary. Git is needed only for this feature.
+Closing the last real terminal removes both owned side panels; neither keeps
+an empty agent window alive.
 
 ## Status
 
@@ -115,9 +166,9 @@ only the session currently visible in its terminal.
 
 | Distro | Command |
 | --- | --- |
-| Debian / Ubuntu | `sudo apt install python3 tmux procps locales` |
-| Fedora / RHEL | `sudo dnf install python3 tmux procps-ng glibc-locale-source` |
-| Arch | `sudo pacman -S python tmux procps-ng` |
+| Debian / Ubuntu | `sudo apt install python3 tmux procps locales git` |
+| Fedora / RHEL | `sudo dnf install python3 tmux procps-ng glibc-locale-source git` |
+| Arch | `sudo pacman -S python tmux procps-ng git` |
 
 Use a UTF-8 locale (e.g. `export LANG=C.UTF-8`) so the sidebar renders
 correctly.

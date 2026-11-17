@@ -22,6 +22,7 @@ def doctor():
         print(('OK' if valid else 'MISSING') + ': ' + name + ' — ' + detail)
         ok = ok and valid
     print('Terminal encoding: ' + locale.getpreferredencoding(False))
+    print('Diff viewer Git: ' + (shutil.which('git') or 'not installed (optional)'))
     for agent in ('codex', 'claude', 'opencode'):
         print('Agent ' + agent + ': ' + (shutil.which(agent) or 'not installed (optional)'))
     return 0 if ok else 1

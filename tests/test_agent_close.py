@@ -17,6 +17,7 @@ class AgentCloseTest(unittest.TestCase):
         self.home = tempfile.mkdtemp(prefix="ta-close-state-")
         self.env = dict(os.environ, TMUX_AGENTS_STATE_DIR=self.home)
         self.env.pop("TMUX", None)
+        self.env.pop("TMUX_PANE", None)
         self.T("new-session", "-d", "-s", "keep", "-x", "180", "-y", "40", "/bin/sh")
         self.anchor = self.T("display-message", "-p", "#{pane_id}").strip()
         self.anchor_pid = self.T("display-message", "-p", "#{pane_pid}").strip()

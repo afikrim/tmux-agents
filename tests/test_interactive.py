@@ -88,6 +88,7 @@ class SidebarPTYTest(unittest.TestCase):
         env = dict(os.environ)
         env["TMUX_AGENTS_STATE_DIR"] = os.path.join(cls.home, "state")
         env.pop("TMUX", None)
+        env.pop("TMUX_PANE", None)
         subprocess.run([sys.executable, BIN, "--socket", SOCK, "ensure"],
                        env=env, timeout=30)
         time.sleep(2.0)
@@ -105,6 +106,7 @@ class SidebarPTYTest(unittest.TestCase):
         env = dict(os.environ)
         env["TMUX_AGENTS_STATE_DIR"] = os.path.join(self.home, "state")
         env.pop("TMUX", None)
+        env.pop("TMUX_PANE", None)
         env["TERM"] = "xterm-256color"
         proc = subprocess.Popen(
             [sys.executable, BIN, "--socket", SOCK, "sidebar"],

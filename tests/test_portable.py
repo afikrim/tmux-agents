@@ -47,6 +47,23 @@ class PortableTest(unittest.TestCase):
                     self.assertFalse(target.exists())
                     self.assertFalse((prefix / 'bin/tmux-agents').is_symlink())
 
+    def test_upgrade_success_replaces_runtime_and_cleans_backup(self):
+        with tempfile.TemporaryDirectory(prefix='ta upgrade ok ') as tmp:
+            home = Path(tmp)
+            env = {k: v for k, v in os.environ.items()
+                   if not k.startswith(('TMUX', 'XDG_', 'CODEX_', 'OPENCODE_'))}
+            env.update(HOME=str(home), TMUX_TMPDIR=str(home))
+            prefix = home / 'custom prefix'
+            args = [sys.executable, str(ROOT / 'scripts/install.py'), '--prefix', str(prefix)]
+            target = prefix / 'share/tmux-agents'
+            for attempt in range(2):
+                result = subprocess.run(args, env=env, capture_output=True, text=True, timeout=45)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertTrue((target / 'bin/tmux-agents').is_file())
+            leftovers = [p for p in target.parent.iterdir()
+                         if p.name.startswith('.tmux-agents-previous-') or p.name.startswith('.tmux-agents-')]
+            self.assertEqual(leftovers, [])
+
     def test_installer_refuses_unrelated_and_symlink_targets(self):
         # No tmux server needed: refusals happen before any configuration.
         with tempfile.TemporaryDirectory(prefix='ta refuse ') as tmp:

@@ -65,6 +65,7 @@ class InstallTest(unittest.TestCase):
         e["TMUX_AGENTS_CODEX_HOOKS"] = InstallTest.codex
         e["TMUX_AGENTS_OPENCODE_JSONC"] = InstallTest.opencode
         e.pop("TMUX", None)
+        e.pop("TMUX_PANE", None)
         return e
 
     def cli(self, *args, timeout=60):
@@ -81,6 +82,7 @@ class InstallTest(unittest.TestCase):
         # Sentinel hook + binding that must survive everything.
         T("set-hook", "-g", "after-new-window[5]", "run-shell 'echo sentinel'")
         T("bind-key", "-T", "prefix", "Q", "display-message", "sentinel")
+        T("bind-key", "-T", "prefix", "v", "display-message", "prior-diff-key")
         r = self.cli("install")
         self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
         self.assertIn("sourced rc=0", r.stdout)
@@ -144,18 +146,28 @@ class InstallTest(unittest.TestCase):
         oc = json.loads(Path(self.opencode).read_text())
         self.assertTrue(any(isinstance(p, dict) and "tmux-agents" in
                             str(p.get("package", "")) for p in oc["plugins"]))
+        # Optional diff is owned infrastructure too; uninstall removes it and
+        # private code checkpoints, and restores the user's previous v bind.
+        r = self.cli("diff", "--pane", "%0")
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        self.assertEqual(len(T("list-panes", "-a", "-F", "#{pane_id}").stdout.split()), 3)
+        private = Path(self.home, "state", sub, "diff")
+        private.mkdir(exist_ok=True)
+        (private / "checkpoint.json.gz").write_bytes(b"owned checkpoint")
         # Uninstall: hooks/keys/sidebars gone, sentinels preserved.
         r = self.cli("uninstall")
         self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
         time.sleep(3.5)  # past the poll interval: nothing may recreate
         panes = T("list-panes", "-a", "-F", "#{pane_id}").stdout.split()
         self.assertEqual(panes, ["%0"], panes)
+        self.assertFalse(private.exists())
         hooks = T("show-hooks", "-g").stdout
         self.assertNotIn("tmux-agents", hooks)
         self.assertIn("after-new-window[5]", hooks)
         keys = T("list-keys", "-T", "prefix", "Q").stdout
         self.assertIn("sentinel", keys)
         self.assertNotIn("tmux-agents", T("list-keys").stdout)
+        self.assertIn("prior-diff-key", T("list-keys", "-T", "prefix", "v").stdout)
         with open(self.conf) as f:
             self.assertNotIn("tmux-agents", f.read())
         # Provider entries removed, sentinels kept.

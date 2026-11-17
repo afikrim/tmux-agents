@@ -88,6 +88,19 @@ def main(argv):
     if not apid or not astart or (agent and ident and ident[0] != agent):
         return 0  # no current matching agent: never bind another pane's status
     paths = state_paths(prefix)
+    if raw_kind.lower() == "userpromptsubmit" and not os.path.exists(os.path.join(paths["dir"], "disabled")):
+        try:
+            flag = subprocess.run(["tmux", *prefix, "show-options", "-p", "-v", "-t", pane,
+                                   "@tmux_agents_diff_tracking"], capture_output=True, text=True, timeout=2)
+            if flag.returncode == 0 and flag.stdout.strip() == "1":
+                from lib import changes
+                cwd = subprocess.run(["tmux", *prefix, "display-message", "-p", "-t", pane,
+                                      "#{pane_current_path}"], capture_output=True, text=True, timeout=2).stdout.rstrip("\n")
+                override = subprocess.run(["tmux", *prefix, "show-options", "-p", "-v", "-t", pane,
+                                           "@tmux_agents_diff_root"], capture_output=True, text=True, timeout=2).stdout.strip()
+                changes.checkpoint(paths, pane, override or cwd, pane_pid, apid, astart, source="turn")
+        except Exception:
+            pass  # A failed diff checkpoint must never block an agent turn.
     store.append_event(paths, pane, kind, agent=agent, agent_pid=apid,
                        agent_start=astart, socket_id=sid)
     return 0

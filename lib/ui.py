@@ -233,7 +233,7 @@ def header_lines(sessions, width, height=24):
 
 def footer_lines(width, n_rows=0):
     return [styled(" " + "─" * max(0, width - 2), width, "line"),
-            styled(" enter open    x new agent", width, "muted"),
+            styled(" enter open  x agent  d diff", width, "muted"),
             styled(" r rename   j/k move   q back", width, "muted"),
             styled(" = native  # screen  ~ observed", width, "muted")]
 

@@ -45,6 +45,7 @@ class Iso(unittest.TestCase):
         e = dict(os.environ)
         e["TMUX_AGENTS_STATE_DIR"] = os.path.join(self.home, "state")
         e.pop("TMUX", None)
+        e.pop("TMUX_PANE", None)
         return e
 
     def cli(self, *args, timeout=30):

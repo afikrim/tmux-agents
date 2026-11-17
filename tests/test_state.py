@@ -209,6 +209,7 @@ class SocketNamespaceTest(unittest.TestCase):
         finally:
             if old is None:
                 os.environ.pop("TMUX", None)
+                os.environ.pop("TMUX_PANE", None)
             else:
                 os.environ["TMUX"] = old
             tu._sid_cache.clear()

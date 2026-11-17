@@ -54,7 +54,7 @@ def list_all(prefix):
     fmt = ("#{session_id}\t#{session_name}\t#{window_id}\t#{window_index}\t"
            "#{window_name}\t#{pane_id}\t#{pane_pid}\t#{pane_active}\t"
            "#{window_active}\t#{window_width}\t#{pane_current_path}\t"
-           "#{window_flags}\t#{@tmux_agents_sidebar}\t#{@tmux_agents_name}\t#{pane_current_command}\t#{pane_title}")
+           "#{window_flags}\t#{@tmux_agents_sidebar}\t#{@tmux_agents_name}\t#{pane_current_command}\t#{@tmux_agents_diff}\t#{pane_title}")
     panes = []
     for line in tmux_lines(prefix, "list-panes", "-a", "-F", fmt):
         parts = line.split("\t")
@@ -76,7 +76,8 @@ def list_all(prefix):
                       "sidebar": len(parts) > 12 and parts[12] == "1",
                       "custom_name": parts[13] if len(parts) > 13 else "",
                       "program": parts[14] if len(parts) > 14 else "",
-                      "title": "\t".join(parts[15:]) if len(parts) > 15 else ""})
+                      "diff": len(parts) > 15 and parts[15] == "1",
+                      "title": "\t".join(parts[16:]) if len(parts) > 16 else ""})
     return panes
 
 
@@ -129,7 +130,7 @@ def daemon_once(prefix, paths):
     table = detect.process_table()
     apids = set()
     for p in panes:
-        if p["pid"] and not detect.is_sidebar_tree(p["pid"], table):
+        if p["pid"] and not p.get("diff") and not detect.is_sidebar_tree(p["pid"], table):
             hit = detect.find_agent(p["pid"], table)
             if hit:
                 apids.add(hit[1])
@@ -143,7 +144,7 @@ def daemon_once(prefix, paths):
              "hashes": prev.get("hashes", {})}
     for p in panes:
         pane_id, pid = p["pane_id"], p["pid"]
-        if pid and detect.is_sidebar_tree(pid, table):
+        if p.get("diff") or (pid and detect.is_sidebar_tree(pid, table)):
             continue
         ident = detect.agent_identity(pid, table, starts) if pid else None
         agent = ident[0] if ident else ""
@@ -323,10 +324,10 @@ def _ensure_locked(prefix, paths):
         # A sidebar must not keep an otherwise closed agent window alive.
         # Destructive cleanup trusts explicit pane ownership tags, never
         # process-tree guesses (a real agent can spawn sidebar tests).
-        if info["panes"] and all(p.get("sidebar") for p in info["panes"]):
+        if info["panes"] and all(p.get("sidebar") or p.get("diff") for p in info["panes"]):
             for pane in info["panes"]:
                 rc, tag, _ = run_tmux(prefix, "show-options", "-p", "-v", "-t",
-                                      pane["pane_id"], "@tmux_agents_sidebar")
+                                      pane["pane_id"], "@tmux_agents_diff" if pane.get("diff") else "@tmux_agents_sidebar")
                 if rc == 0 and tag.strip() == "1":
                     # Kill only our pane. A user pane created since the
                     # snapshot survives; never issue kill-window here.
@@ -496,7 +497,7 @@ def build_sessions(prefix, paths, selected_pane=""):
             real = []
             for q in w["panes"]:
                 pp = next((x for x in panes if x["pane_id"] == q["id"]), None)
-                if pp and (pp.get("sidebar") or (pp["pid"] and detect.is_sidebar_tree(pp["pid"], table))):
+                if pp and (pp.get("diff") or pp.get("sidebar") or (pp["pid"] and detect.is_sidebar_tree(pp["pid"], table))):
                     continue
                 real.append(q)
             w["panes"] = real
@@ -560,7 +561,11 @@ def cmd_sidebar(args):
                 origin_session, origin_client = origin_context(prefix)
                 me = os.environ.get("TMUX_PANE", "")
                 if me:
-                    focused = run_tmux(prefix, "display-message", "-p", "-t", me, "#{pane_active}")[1].strip() == "1"
+                    rc, out, _ = run_tmux(prefix, "display-message", "-p", "-t", me, "#{pane_active}")
+                    if rc == 0 and out.strip() in ("0", "1"):
+                        focused = out.strip() == "1"
+                    # On query failure keep the last known value: a dead
+                    # lookup must never dim the whole UI.
                 next_poll = now + 1.0
             rows = ui.build_rows(sessions)
             if not initialized:
@@ -662,6 +667,12 @@ def cmd_sidebar(args):
                         do_activate(prefix, paths, rows[cursor],
                                     origin_session, origin_client)
                     continue
+                if key == "d" and rows:
+                    chosen = rows[cursor]
+                    if chosen["kind"] == "pane":
+                        cmd_diff(argparse.Namespace(socket="", socket_path="", pane=chosen["ref"],
+                                                    window=chosen.get("win_id", "")), prefix)
+                    continue
                 if key == "x":
                     chosen = rows[cursor] if rows else {}
                     target = chosen.get("win_id", "")
@@ -721,6 +732,11 @@ def activation_plan(row, origin_session="", client=""):
 
 
 def do_activate(prefix, paths, row, origin_session="", client=""):
+    if row.get("kind") == "pane":
+        for pane in list_all(prefix):
+            if pane.get("diff") and pane["window_id"] == row.get("win_id"):
+                run_tmux(prefix, "set-option", "-p", "-t", pane["pane_id"], "@tmux_agents_diff_target", row["ref"])
+                run_tmux(prefix, "set-option", "-p", "-t", row["ref"], "@tmux_agents_diff_tracking", "1")
     for argv in activation_plan(row, origin_session, client):
         rc, _, _ = run_tmux(prefix, *argv)
         if rc != 0:
@@ -745,7 +761,7 @@ def go_back(prefix, paths):
         for p in list_all(prefix):
             if p["window_id"] != cur.strip():
                 continue
-            if p["pid"] and not detect.is_sidebar_tree(p["pid"], table):
+            if p["pid"] and not p.get("diff") and not detect.is_sidebar_tree(p["pid"], table):
                 run_tmux(prefix, "select-pane", "-t", p["pane_id"])
                 return
 
@@ -786,7 +802,6 @@ def do_menu(prefix, origin_window="", origin_pane=""):
                                    "#{window_id}")
             target = cur.strip() if rc == 0 else ""
     script = os.path.join(BASE, "bin", "tmux-agents")
-    sock = " ".join(shlex.quote(a) for a in cli_socket_flags(prefix))
     items = []
     for kind in ("codex", "claude", "opencode"):
         command = shlex.join([sys.executable, script, *cli_socket_flags(prefix),
@@ -794,6 +809,25 @@ def do_menu(prefix, origin_window="", origin_pane=""):
         cmd = 'run-shell "' + esc_tmux(command) + '"'
         items += [kind[0].upper() + kind[1:], kind[0], cmd]
     run_tmux(prefix, "display-menu", "-T", "New agent", "-t", target, *items)
+
+
+def cmd_diff(args, prefix=None):
+    from lib import diffpane
+    prefix = P(args) if prefix is None else prefix
+    paths = state_paths(prefix)
+    store.ensure_dir(paths["dir"])
+    lock = os.open(paths["ensure_lock"], os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if os.path.exists(os.path.join(paths["dir"], "disabled")):
+            return 1
+        return diffpane.toggle(prefix, paths, list_all(prefix), args.pane, args.window,
+                               getattr(args, "directory", ""))
+    except Exception as error:
+        run_tmux(prefix, "display-message", "Cannot open diff: " + ui.san(str(error), 0))
+        return 1
+    finally:
+        os.close(lock)
 
 
 def rename_target(prefix, kind, target, name):
@@ -831,7 +865,7 @@ def cmd_launch(args, prefix=None):
     for p in list_all(prefix):
         if winspec and p["window_id"] != winspec:
             continue
-        if (p.get("sidebar") or (p["pid"] and detect.is_sidebar_tree(p["pid"], table))):
+        if (p.get("diff") or p.get("sidebar") or (p["pid"] and detect.is_sidebar_tree(p["pid"], table))):
             continue
         if not cwd:
             cwd, sess = p["path"], p["session_id"]
@@ -908,6 +942,7 @@ HOOK_LINES = [
 KEY_LINES = [
     ('root', 'M-e', 'run-shell \'__BASE__ __SOCK__ focus --window "#{window_id}" --pane "#{pane_id}\''),
     ('prefix', 'S', 'run-shell \'__BASE__ __SOCK__ toggle --window "#{window_id}"\''),
+    ('prefix', 'v', 'run-shell \'__BASE__ __SOCK__ diff --window "#{window_id}" --pane "#{pane_id}"\''),
     ('prefix', 'a', 'run-shell \'__BASE__ __SOCK__ menu --window "#{window_id}" --pane "#{pane_id}"\''),
 ]
 CONF_TAIL = "# <<< tmux-agents <<<\n"
@@ -1107,7 +1142,7 @@ def cmd_install(args):
     block += "run-shell " + quote(shellbase + " capture-baseline --hook-index " + str(idx)) + "\n"
     block += "run-shell -b " + quote(shellbase + " daemon-start") + "\n"
     for table, key, action in (("root", "M-e", "focus"), ("prefix", "S", "toggle"),
-                               ("prefix", "a", "menu")):
+                               ("prefix", "a", "menu"), ("prefix", "v", "diff")):
         command = shellbase + " " + action + " --window '#{window_id}'"
         if action != "toggle":
             command += " --pane '#{pane_id}'"
@@ -1183,15 +1218,25 @@ def cmd_uninstall(args):
     lock = os.open(paths["ensure_lock"], os.O_CREAT | os.O_RDWR, 0o600)
     try:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        for p in sidebar_panes(prefix):
+        for p in list_all(prefix):
+            if not (p.get("sidebar") or p.get("diff")):
+                continue
             run_tmux(prefix, "kill-pane", "-t", p["pane_id"])
     finally:
         os.close(lock)
+    for p in list_all(prefix):
+        run_tmux(prefix, "set-option", "-pu", "-t", p["pane_id"], "@tmux_agents_diff_tracking")
+        run_tmux(prefix, "set-option", "-pu", "-t", p["pane_id"], "@tmux_agents_diff_root")
+    checkpoint_dir = os.path.join(paths["dir"], "diff")
+    if os.path.islink(checkpoint_dir):
+        os.unlink(checkpoint_dir)
+    else:
+        shutil.rmtree(checkpoint_dir, ignore_errors=True)
     for wid in tmux_lines(prefix, "list-windows", "-a", "-F", "#{window_id}"):
         rc, value, _ = run_tmux(prefix, "show-window-options", "-v", "-t", wid, "@tmux_agents_saved_rename")
         if rc == 0:
             run_tmux(prefix, "set-window-option", "-t", wid, "automatic-rename", value.strip())
-        for option in ("@tmux_agents_saved_rename", "@tmux_agents_hidden"):
+        for option in ("@tmux_agents_saved_rename", "@tmux_agents_hidden", "@tmux_agents_diff_wrap"):
             run_tmux(prefix, "set-window-option", "-u", "-t", wid, option)
     # 4. Remove our keys; restore exactly what was there before install.
     saved = meta.get("saved_keys", {}) or {}
@@ -1251,10 +1296,12 @@ def main(argv=None):
     sub.add_parser("sidebar"); sub.add_parser("ensure")
     h = sub.add_parser("hide"); h.add_argument("--all-windows", action="store_true")
     h.add_argument("--window", default="")
-    for name in ("toggle", "focus", "menu"):
+    for name in ("toggle", "focus", "menu", "diff"):
         p = sub.add_parser(name)
         p.add_argument("--window", default="")
         p.add_argument("--pane", default="")
+        if name == "diff":
+            p.add_argument("--directory", default="", help="Git checkout to show (default: terminal cwd)")
     rn = sub.add_parser("rename", help="rename a sidebar conversation, session or window")
     targets = rn.add_mutually_exclusive_group()
     targets.add_argument("--pane")
@@ -1262,6 +1309,8 @@ def main(argv=None):
     targets.add_argument("--window")
     rn.add_argument("--reset", action="store_true", help="restore automatic conversation title")
     rn.add_argument("name", nargs="?")
+    dv = sub.add_parser("diff-view", help=argparse.SUPPRESS)
+    dv.add_argument("--target", required=True)
     sub.add_parser("status"); sub.add_parser("install")
     cp = sub.add_parser("capture-baseline", help=argparse.SUPPRESS)
     cp.add_argument("--hook-index", type=int, required=True)
@@ -1311,6 +1360,11 @@ def main(argv=None):
     elif args.command == "menu":
         do_menu(P(args), getattr(args, "window", ""),
                 getattr(args, "pane", ""))
+    elif args.command == "diff":
+        sys.exit(cmd_diff(args) or 0)
+    elif args.command == "diff-view":
+        from lib.diffpane import run
+        run(P(args), paths_of(args), args.target)
     elif args.command == "launch":
         sys.exit(cmd_launch(args) or 0)
     elif args.command == "event":
