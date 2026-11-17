@@ -24,6 +24,53 @@ class NamesTest(unittest.TestCase):
         self.assertEqual(ui.pane_name('', 'Investigate error', 'opencode'), 'Investigate error')
         self.assertEqual(ui.pane_name('', '\x1bBad\x07 title', 'codex'), 'Bad title')
 
+    def test_foreground_program_names_keep_custom_and_agent_titles(self):
+        self.assertEqual(ui.pane_name('', '', '', program='nvim'), 'Neovim')
+        self.assertEqual(ui.pane_name('', '', '', program='/usr/bin/htop'), 'htop')
+        self.assertEqual(ui.pane_name('', '', '', program='-zsh'), 'shell')
+        self.assertEqual(ui.pane_name('Editor', '', '', program='nvim'), 'Editor')
+        self.assertEqual(ui.pane_name('', 'Fix auth', 'codex', program='node'), 'Fix auth')
+
+    def test_program_label_changes_when_program_opens_and_exits(self):
+        import time
+        import shlex
+        with tempfile.TemporaryDirectory(prefix='ta-program-') as tmp:
+            prefix = ['-S', str(Path(tmp) / 'socket')]
+            def tmux(*args):
+                return ta.run_tmux(prefix, *args)
+            try:
+                rc, _, error = tmux('-f', '/dev/null', 'new-session', '-d', '-s', 'program', '/bin/sh')
+                self.assertEqual(rc, 0, error)
+                pane = tmux('display-message', '-p', '#{pane_id}')[1].strip()
+                paths = {'state': str(Path(tmp) / 'state.json')}
+                def name():
+                    return ta.build_sessions(prefix, paths)[0]['windows'][0]['panes'][0]['display_name']
+                self.assertEqual(name(), 'shell')
+                tmux('send-keys', '-t', pane, 'sleep 30', 'Enter')
+                deadline = time.monotonic() + 3
+                while time.monotonic() < deadline and name() != 'sleep':
+                    time.sleep(.1)
+                self.assertEqual(name(), 'sleep')
+                # Verify an actual Neovim process too when it is installed.
+                import shutil
+                nvim = shutil.which('nvim')
+                if nvim:
+                    tmux('send-keys', '-t', pane, 'C-c')
+                    tmux('send-keys', '-t', pane, shlex.quote(nvim) + ' -u NONE -i NONE', 'Enter')
+                    deadline = time.monotonic() + 4
+                    while time.monotonic() < deadline and name() != 'Neovim':
+                        time.sleep(.1)
+                    self.assertEqual(name(), 'Neovim')
+                    tmux('send-keys', '-t', pane, 'Escape', ':qa!', 'Enter')
+                else:
+                    tmux('send-keys', '-t', pane, 'C-c')
+                deadline = time.monotonic() + 3
+                while time.monotonic() < deadline and name() != 'shell':
+                    time.sleep(.1)
+                self.assertEqual(name(), 'shell')
+            finally:
+                tmux('kill-server')
+
     def test_rename_and_automatic_titles_on_real_server(self):
         with tempfile.TemporaryDirectory(prefix='ta-names-') as tmp:
             prefix = ['-S', str(Path(tmp) / 'socket')]

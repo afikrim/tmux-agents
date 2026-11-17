@@ -43,7 +43,7 @@ def san(text, width):
     return text
 
 
-def pane_name(custom, title, agent, cwd=""):
+def pane_name(custom, title, agent, cwd="", program=""):
     """Prefer a local nickname, then the agent's live terminal title.
 
     Titles are metadata published by the CLI (OSC), never scraped chat text.
@@ -61,7 +61,12 @@ def pane_name(custom, title, agent, cwd=""):
                    socket.gethostname().lower(), socket.gethostname().split(".")[0].lower()}
         if name and name.lower() not in generic and name not in (cwd, os.path.basename(cwd), os.path.expanduser("~")):
             return name[:120]
-    return agent or "shell"
+    if agent:
+        return agent
+    command = os.path.basename(san(program, 0).strip()).lstrip("-")
+    if command and command.lower() not in {"sh", "bash", "zsh", "fish", "dash", "ash", "ksh", "csh", "tcsh", "nu", "nushell"}:
+        return {"nvim": "Neovim", "vim": "Vim"}.get(command.lower(), command)[:120]
+    return "shell"
 
 
 def build_rows(sessions):

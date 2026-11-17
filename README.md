@@ -38,6 +38,10 @@ publishes them. Codex conversation titles are supported this way; Claude and
 OpenCode also work when they publish terminal titles. This does not read
 conversation files or generate titles with a model.
 
+Ordinary terminal rows show the foreground program, such as **Neovim**,
+**Vim**, `htop`, or `python3`. They return to `shell` when the program exits.
+A custom sidebar name still takes priority.
+
 Focus the sidebar with Alt-e, select a row, and press `r`. Edit its name,
 then press Enter to save or Escape to cancel. Ctrl-U clears the field.
 Saving an empty conversation name restores its automatic title. Session and
