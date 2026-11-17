@@ -61,8 +61,8 @@ class AppearanceTest(unittest.TestCase):
         sessions[0]['windows'] = sessions[0]['windows'][:1]
         rows = ui.build_rows(sessions)
         lines, _, _, _, hits = ui.frame(rows,sessions,2,0,32,20,return_hits=True)
-        self.assertEqual([y for y,i in hits.items() if rows[i]['kind'] == 'pane'], [20])
-        self.assertIn('Agents / work', ANSI.sub('',lines[-2]))
+        self.assertEqual([y for y,i in hits.items() if rows[i]['kind'] == 'pane'], [19,20])
+        self.assertIn('Agents / work', ANSI.sub('',lines[-3]))
 
     def test_focused_title_scrolls_with_fixed_status_and_unfocused_stays_still(self):
         row = {'kind': 'pane', 'ref': '%1', 'name': 'ABCDEFGHIJKLMNOQRSTUVWXYZ',

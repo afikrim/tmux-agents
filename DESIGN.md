@@ -52,8 +52,10 @@ unless the user explicitly chooses to switch it.
 Fixed-width left rail with project sessions above the selected project's agent
 windows. The agents block is anchored to the bottom and capped at half the sidebar
 height, including its heading and divider. It shrinks to its contents when
-shorter; projects use the space above. Each section scrolls independently. One row per
-window, with a stable real-pane target for activation. Section headings and a
+shorter; projects use the space above. Each section scrolls independently. Each
+project has a title, counts beneath it and one blank row between projects.
+Each agent window has a title and a supporting activity caption, with a stable
+real-pane target for activation. Section headings and a
 single divider carry the hierarchy. Shortcut hints live in a searchable popup,
 not permanent footers. Native centered popups inherit the Ink / Mint palette
 and terminal font. Mouse coordinates use explicit rendered-row maps.
@@ -64,12 +66,15 @@ Use solid tonal surfaces. The active window and focused row have distinct
 backgrounds. Render complete frames without clearing the screen between polls.
 
 ## Shapes
-Square terminal geometry with Powerline separators in the tmux status bar.
-No emoji-based navigation or dependency on decorative sidebar icons.
+Square terminal geometry. The default tmux status bar is hidden; the sidebar
+and project switcher provide navigation without a separate session/window/clock row.
+Navigation uses text. The user-requested sleeping kaomoji `(－ω－) zzZ` identifies idle captions.
 
 ## Components
-Project names identify sessions; agent rows show conversation/program names
-and right-aligned status text. The current project is accented; keyboard
+Project names identify sessions; their run/idle/unread counts are grouped below.
+Unread counts are underlined when actionable and open the first unread terminal.
+Agent entries show conversation/program titles, right-aligned status, and a
+subordinate current-action caption. The current project is accented; keyboard
 selection gets the focused background. Agent titles scroll when focused and
 clipped. A project cursor previews that project's windows before activation.
 Pointer hover uses a subtler background and scrolls clipped titles without

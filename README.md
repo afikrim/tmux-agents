@@ -2,7 +2,9 @@
 
 An always-visible, Corgi-inspired workspace sidebar inside tmux. It lists
 projects (tmux sessions) above agent windows, with live status for Codex, Claude Code
-and OpenCode. Your agents keep their own interactive terminals.
+and OpenCode. Your agents keep their own interactive terminals. The default
+tmux status bar (session, window list, and clock) is hidden; navigation lives
+in the sidebar and project switcher. Uninstall restores its previous setting.
 
 ## Controls
 
@@ -25,6 +27,26 @@ and OpenCode. Your agents keep their own interactive terminals.
 | q / Escape | Return focus to the previous terminal |
 
 The sidebar has two sections: **Projects** on top and **Agents** below.
+Each project has a title, a counts line, and a blank row separating it from the
+next project. Counts show running windows, idle/waiting windows, and unread
+windows. Unknown status is excluded from running/idle totals. Click the
+underlined **unread** count to open the first unread terminal in that project,
+including an unread split within a window. Zero unread does nothing.
+
+Unread means a new completion, question, input request, or approval you have
+not visited. Visiting the real terminal in an attached client marks it read;
+hovering, previewing a project, and detached active panes do not. The same
+notice stays read across polls; a later turn can become unread again. Tracking
+starts when this version runs and does not reconstruct conversation history.
+
+Each agent entry has an activity caption below its title. Native hooks supply
+bounded labels such as **Reading files**, **Editing files**, **Running command**,
+or **Thinking**; **Need input** and **Need approval** take priority. Idle terminals
+show `(－ω－) zzZ`. Missing tool metadata falls back to **Working** or an honest
+unknown status. No prompts, command arguments, tool output, or chat text are
+stored for these captions. Existing OpenCode sessions need a restart to load
+the expanded tool-event bridge; their lifecycle status captions still work.
+
 Moving through projects previews only that project's windows; Enter switches
 to the project. Each window appears once, labelled with its active agent,
 conversation, or foreground program. Normal tmux splits remain accessible
@@ -139,6 +161,12 @@ an empty agent window alive.
 
 `RUNNING`, `INPUT`, `APPROVAL`, `QUESTION`, `DONE`, `IDLE`, `UNKNOWN` use text
 and terminal palette colors. A source mark follows each agent status:
+
+**Need input** is reserved for explicit harness questions, forms, and typed
+decision requests. A completed turn, ordinary prompt, session start, or
+interruption is **Idle** `(－ω－) zzZ`. Permission requests remain **Need approval**.
+Completed turns can still become unread while you are away; unread does not
+mean the agent requires a decision.
 
 - `=`: native agent lifecycle event.
 - `#`: current terminal prompt/footer detection.
@@ -303,8 +331,8 @@ Inspired by [Corgi](https://github.com/tals/corgi). See LICENSE-NOTICE.
 ## Appearance (optional)
 
 Ink / Mint coordinates the sidebar and tmux chrome: grouped workspaces,
-right-aligned status text, focus-aware selection, Powerline status segments,
-and a footer anchored to the pane bottom. Theme values are saved at install
+right-aligned status text, focus-aware selection, and a bottom-anchored agents
+list. The default tmux status bar is hidden. Theme values are saved at install
 and restored on uninstall. No whole-screen clear is sent on normal updates.
 
 A matching terminal profile ships at `extras/kitty-tmux-agents.conf` (also in

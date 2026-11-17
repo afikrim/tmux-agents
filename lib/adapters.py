@@ -5,9 +5,9 @@ settings file for Claude and Codex; data.on TUI plugin for OpenCode v2),
 reimplemented in stdlib Python. License notice retained in LICENSE-NOTICE.
 
 Event mapping is conservative: unrecognized payloads are DROPPED, never
-fabricated. Stop/SessionEnd while the process lives means the turn ended and
-the agent waits for the user (needs-input); done is derived from process
-exit, never from a hook alone.
+fabricated. Stop while the process lives means the turn ended and is idle;
+done is derived from process exit, never from a hook alone. Only explicit
+questions and decision requests require user input.
 """
 import copy
 import json
@@ -73,9 +73,8 @@ def hook_kind(provider, event_name, payload):
     """Map (provider, hook_event_name, payload) -> status kind or '' to drop.
 
     payload is the parsed stdin JSON (dict). Never invents attention:
-    unrecognized payloads are dropped; bare Notification (which by schema
-    means "waiting on the user") maps to needs-input; typed
-    notification_type fields are honored explicitly.
+    unrecognized payloads are dropped. Generic waiting/completion means idle;
+    only question tools and typed input/elicitation requests require input.
     """
     name = (event_name or "").strip()
     if not name:
@@ -84,7 +83,7 @@ def hook_kind(provider, event_name, payload):
     if not isinstance(payload, dict):
         payload = {}
     if low == "sessionstart":
-        return "needs-input"
+        return "idle"
     if low in ("userpromptsubmit", "posttooluse",
                "precompact", "postcompact", "sessioncreated"):
         return "running"
@@ -102,25 +101,25 @@ def hook_kind(provider, event_name, payload):
     if low == "formcreated":
         return "question"
     if low in ("stop", "session.idle"):
-        return "needs-input"
+        return "idle"
     if low == "interrupt":
-        return "needs-input"
+        return "idle"
     if low == "sessionend":
         return "done"
     if low == "notification":
         ntype = str(payload.get("notification_type", "") or "").lower()
         if ntype in ("permission_prompt", "permissionprompt", "permission"):
             return "needs-approval"
-        if ntype in ("idle_prompt", "idleprompt", "idle", "input_needed",
-                     "elicitation", "elicitation_dialog"):
+        if ntype in ("idle_prompt", "idleprompt", "idle"):
+            return "idle"
+        if ntype in ("input_needed", "elicitation", "elicitation_dialog", "question", "question_prompt"):
             return "needs-input"
         text = str(payload.get("message", "") or "")
         if re.search(r"permission|approv", text, re.I):
             return "needs-approval"
         if (not text.strip() or
                 re.search(r"input needed|needs input|waiting|idle|elicitation", text, re.I)):
-            # A bare Notification event by schema means the agent waits.
-            return "needs-input"
+            return "idle"
         return ""
     return ""
 

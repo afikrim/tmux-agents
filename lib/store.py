@@ -9,6 +9,7 @@ import fcntl
 import json
 import os
 import time
+from .activity import ACTIONS
 
 from .tmuxutil import state_paths
 
@@ -48,10 +49,16 @@ def read_state(paths):
 
 
 def append_event(paths, pane_id, kind, agent="", agent_pid=0,
-                 agent_start=0, socket_id="", ts=None):
+                 agent_start=0, socket_id="", ts=None, action="", completed=False):
     rec = {"t": ts if ts is not None else time.time(), "pane": pane_id,
            "kind": kind, "agent": agent or "", "apid": agent_pid or 0,
            "astart": agent_start or 0, "sock": socket_id or ""}
+    if action in ACTIONS:
+        rec["action"] = action
+    if kind == "needs-input":
+        rec["input_required"] = True
+    if completed:
+        rec["completed"] = True
     ensure_dir(paths["dir"])
     guard = os.open(paths["events"] + ".lock", os.O_CREAT | os.O_RDWR, 0o600)
     fcntl.flock(guard, fcntl.LOCK_EX)

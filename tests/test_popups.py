@@ -1,4 +1,5 @@
 import fcntl
+import json
 import os
 from pathlib import Path
 import pty
@@ -161,6 +162,7 @@ class PopupTTYTest(unittest.TestCase):
         before = self.t('list-panes','-a','-F','#{pane_id}|#{pane_pid}').stdout
         motion(y)
         self.assertEqual(self.t('display-message','-p','-c',self.name,'#{pane_id}').stdout.strip(), main)
+
         self.drain(1.3)
         motion(y, 6)  # Same row must not reset the title's scroll timer.
         self.drain(.5)
@@ -174,3 +176,67 @@ class PopupTTYTest(unittest.TestCase):
         self.assertIn('ABCDE', capture().splitlines()[y-1])
         self.assertEqual(self.t('list-panes','-a','-F','#{pane_id}|#{pane_pid}').stdout, before)
         self.assertEqual(self.t('display-message','-p','-c',self.name,'#{pane_id}').stdout.strip(), main)
+
+    def test_project_unread_click_visits_and_acknowledges_exact_agent(self):
+        agent=Path(self.temp.name)/'codex'
+        agent.write_text('#!/bin/sh\nwhile true; do sleep 1; done\n')
+        agent.chmod(0o755)
+        target=self.t('new-window','-d','-P','-F','#{pane_id}','-t','beta search',str(agent)).stdout.strip()
+        self.t('set-option','-g','mouse','on')
+        def hook(event,**extra):
+            env=dict(self.env,TMUX=self.prefix[1]+',1,0',TMUX_PANE=target)
+            result=subprocess.run([sys.executable,str(ROOT/'hooks/agent-event'),'--agent','codex'],
+                env=env,input=json.dumps(dict(hook_event_name=event,**extra)),capture_output=True,text=True,timeout=10)
+            self.assertEqual(result.returncode,0,result.stderr)
+        def poll():
+            result=subprocess.run([sys.executable,str(ROOT/'bin/tmux-agents'),'--socket-path',self.prefix[1],
+                'daemon','--once'],env=self.env,capture_output=True,text=True,timeout=15)
+            self.assertEqual(result.returncode,0,result.stderr)
+            return json.loads(result.stdout)['panes'][target]
+        hook('PreToolUse',tool_name='Grep',tool_input={'pattern':'private conversation text'})
+        self.assertEqual(poll()['caption'],'Searching code')
+        hook('Stop')
+        stopped=poll()
+        self.assertTrue(stopped['unread'])
+        self.assertEqual(stopped['status'],'idle')
+        self.assertIn('zzZ',stopped['caption'])
+        subprocess.run([sys.executable,str(ROOT/'bin/tmux-agents'),'--socket-path',self.prefix[1],'ensure'],
+                       env=self.env,check=True,timeout=20,stdout=subprocess.DEVNULL)
+        self.drain(.8)
+        sidebar=next(line.split('|') for line in self.t('list-panes','-t','alpha','-F',
+            '#{pane_id}|#{@tmux_agents_sidebar}|#{pane_left}|#{pane_top}').stdout.splitlines() if '|1|' in line)
+        lines=self.t('capture-pane','-p','-t',sidebar[0]).stdout.splitlines()
+        project_y=next(i for i,line in enumerate(lines,1) if 'beta search' in line)
+        y=project_y+1
+        x=lines[y-1].index('1 unread')+2
+        os.write(self.master,('\x1b[<35;%d;%dM' % (int(sidebar[2])+x,int(sidebar[3])+y)).encode())
+        self.drain(.2)
+        self.assertTrue(poll()['unread'])  # Hover/preview never marks read.
+        os.write(self.master,('\x1b[<0;%d;%dM' % (int(sidebar[2])+x,int(sidebar[3])+y)).encode())
+        self.drain(.8)
+        self.assertEqual(self.t('display-message','-p','-c',self.name,'#{pane_id}').stdout.strip(),target)
+        self.assertFalse(poll()['unread'])
+        self.assertFalse(poll()['unread'])  # Same stop never becomes unread again.
+        self.t('switch-client','-c',self.name,'-t','alpha')
+        hook('Stop')
+        self.assertTrue(poll()['unread'])
+        for path in Path(self.env['TMUX_AGENTS_STATE_DIR']).rglob('events.jsonl'):
+            self.assertNotIn('private conversation text',path.read_text())
+        hook('PreToolUse',tool_name='request_user_input')
+        self.assertEqual(poll()['status'],'question')
+        hook('Notification',notification_type='elicitation_dialog')
+        self.assertEqual(poll()['status'],'needs-input')
+        # Old records did not distinguish a normal turn-end from a decision.
+        # Upgrade clears that ambiguous INPUT; new typed requests retain it.
+        path=next(Path(self.env['TMUX_AGENTS_STATE_DIR']).rglob('events.jsonl'))
+        records=[json.loads(line) for line in path.read_text().splitlines()]
+        records[-1].pop('input_required')
+        path.write_text(''.join(json.dumps(record)+'\n' for record in records))
+        self.assertEqual(poll()['status'],'idle')
+        hook('Notification',notification_type='elicitation_dialog')
+        self.assertEqual(poll()['status'],'needs-input')
+        hook('Stop')
+        self.assertEqual(poll()['status'],'idle')
+        path.write_text('')
+        self.t('respawn-pane','-k','-t',target,'sleep','60')
+        self.assertEqual(poll()['status'],'done')

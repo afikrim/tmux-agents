@@ -291,7 +291,7 @@ class Iso(unittest.TestCase):
         self.assertEqual(sid_l, sid_s)
         self.assertEqual(sid_l, sid_t)
         # Hook script end-to-end: Stop payload + TMUX_PANE -> event log ->
-        # daemon snapshot reads needs-input/event for the fake agent.
+        # daemon snapshot reads idle/event for the fake agent.
         d = tempfile.mkdtemp(prefix="ta-hooke2e-")
         self.addCleanup(shutil.rmtree, d, True)
         agent = os.path.join(d, "codex")
@@ -318,7 +318,7 @@ class Iso(unittest.TestCase):
             capture_output=True, text=True, timeout=30,
             env=self.env()).stdout)
         info = sb["panes"].get(pane, {})
-        self.assertEqual(info.get("status"), "needs-input", info)
+        self.assertEqual(info.get("status"), "idle", info)
         self.assertEqual(info.get("source"), "event", info)
         self.assertEqual(info.get("agent"), "codex", info)
         self.assertEqual(T(self.SOCK, "kill-window", "-t", hwid).returncode, 0)

@@ -88,6 +88,7 @@ class InstallTest(unittest.TestCase):
         r = self.cli("install")
         self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
         self.assertIn("sourced rc=0", r.stdout)
+        self.assertEqual(T("show-options", "-g", "-v", "status").stdout.strip(), "off")
         # Block present in temp conf, production untouched.
         with open(self.conf) as f:
             conf = f.read()

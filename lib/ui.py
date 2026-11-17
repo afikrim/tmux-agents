@@ -9,7 +9,7 @@ import re
 import os
 import socket
 import unicodedata
-from . import theme
+from . import theme, activity
 
 # ANSI: terminal-inheriting (default fg/bg) + standard theme colors.
 RESET = "\x1b[0m"
@@ -69,6 +69,28 @@ def pane_name(custom, title, agent, cwd="", program=""):
     return "shell"
 
 
+def primary_pane(window):
+    panes = window.get("panes", [])
+    return next((p for p in panes if p.get("agent") and p.get("current")),
+                next((p for p in panes if p.get("agent")),
+                     next((p for p in panes if p.get("current")), next(iter(panes), {}))))
+
+
+def project_summary(session):
+    windows = [w for w in session.get("windows", []) if w.get("panes")]
+    statuses = [primary_pane(w).get("status", "unknown") for w in windows]
+    first = next(((w, p) for w in windows for p in w["panes"] if p.get("unread")), None)
+    target = None
+    if first:
+        window, pane = first
+        target = {"kind":"pane", "ref":pane["id"], "sess_id":session["id"],
+                  "win_id":window["id"], "target":("pane",pane["id"])}
+    return {"running":statuses.count("running"),
+            "idle":sum(s in ("idle","needs-input","needs-approval","question","done") for s in statuses),
+            "unread":sum(any(p.get("unread") for p in w["panes"]) for w in windows),
+            "unread_target":target}
+
+
 def build_rows(sessions, project_id=None):
     """Projects first, then one active-terminal entry per selected project window."""
     project = next((s for s in sessions if s["id"] == project_id),
@@ -76,16 +98,14 @@ def build_rows(sessions, project_id=None):
     rows = [{"kind": "session", "depth": 0, "ref": s["id"], "sess_id": s["id"],
              "name": s["name"], "label": san(s["name"], 0),
              "current": s.get("attached", False), "project_selected": s is project,
-             "target": ("session", s["id"])} for s in sessions]
+             "target": ("session", s["id"]), **project_summary(s)} for s in sessions]
     rows.append({"kind": "section", "depth": 0, "ref": "section:agents", "label": "Agents",
                  "name": project["name"] if project else "", "target": ("section", "")})
     for window in project.get("windows", []) if project else []:
         panes = window.get("panes", [])
         if not panes:
             continue
-        pane = next((p for p in panes if p.get("agent") and p.get("current")),
-                    next((p for p in panes if p.get("agent")),
-                         next((p for p in panes if p.get("current")), panes[0])))
+        pane = primary_pane(window)
         name = pane.get("display_name") or pane.get("agent") or "shell"
         if name == "shell" and not pane.get("custom_name"):
             title = window.get("name", "")
@@ -99,6 +119,8 @@ def build_rows(sessions, project_id=None):
                      "name": name, "label": san("%s [%s%s]" % (name, tag, source), 0),
                      "current": project.get("attached", False) and window.get("active", False),
                      "custom_name": pane.get("custom_name", ""), "agent": pane.get("agent", ""),
+                     "caption": pane.get("caption") or activity.caption(pane.get("status", "unknown")),
+                     "unread": any(p.get("unread") for p in panes),
                      "status": pane.get("status", "unknown"), "source": pane.get("source", "")})
     return rows
 
@@ -245,6 +267,46 @@ def hover_target(rows, hits, width, key):
     return None
 
 
+class HitMap(dict):
+    """Rendered row indices plus cell ranges for the unread count action."""
+    def __init__(self):
+        super().__init__()
+        self.unread = {}
+
+
+def click_target(rows, hits, x, y):
+    index = hits.get(y)
+    if index is None or not 0 <= index < len(rows):
+        return None
+    unread = getattr(hits, "unread", {}).get(y)
+    if unread and unread[0] <= x <= unread[1]:
+        return rows[index].get("unread_target")
+    return rows[index]
+
+
+def summary_line(row, width, background):
+    """Colour each count and return the exact visible unread click range."""
+    count = lambda value: str(value) if value < 100 else "99+"
+    segments = [(count(row.get("running",0))+" run", "accent"),
+                (count(row.get("idle",0))+" idle", "muted"),
+                (count(row.get("unread",0))+" unread", "amber" if row.get("unread") else "muted")]
+    text, used, target = RESET + theme.bg(background) + "  ", 2, None
+    for i, (label, color) in enumerate(segments):
+        if i:
+            space = min(2,max(0,width-used))
+            text += " "*space
+            used += space
+        visible = fit(label, max(0, width-used), False)
+        if i == 2 and visible:
+            target = (used+1, used+cell_width(visible))
+        text += theme.fg(color) + ("\x1b[4m" if i == 2 and row.get("unread") else "") + visible + "\x1b[24m"
+        used += cell_width(visible)
+    # fit the whole plain layout first on very narrow terminals.
+    if width < 8:
+        return styled("  %d unread" % row.get("unread",0),width,"amber",background), (3,width) if width>=3 else None
+    return text + " " * max(0,width-used) + RESET + BASE, target
+
+
 def frame(rows, sessions, cursor, top, width, height, focused=True, scroll_elapsed=0.0, return_hits=False,
           hover_ref=None, hover_elapsed=0.0):
     """Two independently scrolled sections with an explicit mouse hit map."""
@@ -253,11 +315,11 @@ def frame(rows, sessions, cursor, top, width, height, focused=True, scroll_elaps
     projects = [i for i, row in enumerate(rows) if row["kind"] == "session"]
     agents = [i for i, row in enumerate(rows) if row["kind"] == "pane"]
     section = next((row for row in rows if row["kind"] == "section"), {})
-    lines, hits = [], {}
+    lines, hits = [], HitMap()
     def add(text):
         if len(lines) < height:
             lines.append(text)
-    def group(indices, count, key):
+    def group(indices, count, key, stride):
         count = max(0, count)
         start = offsets.get(key, 0)
         selected = next((pos for pos, index in enumerate(indices) if index == cursor), None)
@@ -272,23 +334,42 @@ def frame(rows, sessions, cursor, top, width, height, focused=True, scroll_elaps
         offsets[key] = start
         for index in indices[start:start + count]:
             hits[len(lines) + 1] = index
+            row = rows[index]
+            background = ("selected" if index == cursor and focused else "hover" if row["ref"] == hover_ref
+                          else "panel" if row.get("current") else "bg")
             add(row_line(rows[index], index == cursor, width, focused, scroll_elapsed,
                          rows[index]["ref"] == hover_ref, hover_elapsed))
+            if stride >= 2:
+                hits[len(lines)+1] = index
+                if key == "projects":
+                    summary, span = summary_line(row,width,background)
+                    if span:
+                        hits.unread[len(lines)+1] = span
+                    add(summary)
+                else:
+                    status = row.get("status", "unknown")
+                    color = "amber" if status in ("question","needs-input") else "rose" if status=="needs-approval" else "muted"
+                    add(styled("     "+row.get("caption", ""),width,color,background))
+            if stride >= 3:
+                add(styled("",width))
     # Keep a compact agents block against the bottom. Its heading/divider
     # count toward the half-height cap; tiny terminals retain one useful row.
     agent_limit = min(max(0, height - 1), max(3, height // 2))
-    agent_count = min(max(1, len(agents)), max(0, agent_limit - 2))
-    agent_height = 2 + agent_count if agent_count else 0
+    agent_stride = 2 if height >= 8 else 1
+    agent_count = min(max(1, len(agents)), max(0, (agent_limit - 2)//agent_stride))
+    agent_height = 2 + agent_count*agent_stride if agent_count else 0
     add(styled(" Projects / %d" % len(projects), width, "accent", bold=True))
-    project_count = min(len(projects), max(0, height - agent_height - 1))
-    group(projects, project_count, "projects")
+    available = max(0,height-agent_height-1)
+    project_stride = 3 if available>=3 else 2 if available>=2 else 1
+    project_count = min(len(projects), available//project_stride)
+    group(projects, project_count, "projects", project_stride)
     while len(lines) < height - agent_height:
         add(styled("", width))
     if agent_height:
         add(styled(" " + "─" * max(0, width - 2), width, "line"))
         add(styled(" Agents / " + section.get("name", ""), width, "accent", bold=True))
         if agents:
-            group(agents, agent_count, "agents")
+            group(agents, agent_count, "agents", agent_stride)
         else:
             add(styled(" No terminals in this project", width, "muted"))
     lines.extend(styled("", width) for _ in range(height - len(lines)))

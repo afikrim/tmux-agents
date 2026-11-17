@@ -18,6 +18,7 @@ def bg(role):
 
 # (window-scoped, name, value). Exact prior values are saved by the installer.
 TMUX_OPTIONS = [
+    (False, "status", "off"),
     (False, "status-style", "fg=#96a6bd,bg=#11151f"),
     (False, "message-style", "fg=#e4eaf4,bg=#283b4a"),
     (False, "message-command-style", "fg=#e4eaf4,bg=#283b4a"),

@@ -19,7 +19,7 @@ import time
 
 BASE = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.insert(0, BASE)
-from lib import adapters, detect, status as st, store, ui, theme  # noqa: E402
+from lib import adapters, detect, status as st, store, ui, theme, activity  # noqa: E402
 from lib.tmuxutil import (cli_socket_flags, resolve_socket,
                            socket_id_of, state_paths,  # noqa: E402
                           run_tmux, tmux_lines)
@@ -140,6 +140,7 @@ def daemon_once(prefix, paths):
     for e in events:
         if e.get("sock", "") in ("", sid):
             latest[e.get("pane")] = e
+    viewed = set(tmux_lines(prefix, "list-clients", "-F", "#{pane_id}"))
     state = {"updated": time.time(), "panes": {},
              "hashes": prev.get("hashes", {})}
     for p in panes:
@@ -161,6 +162,11 @@ def daemon_once(prefix, paths):
             evinfo = {"kind": ev.get("kind"), "ts": ev.get("t", 0),
                       "ok_gen": bound_ok,
                       "had_agent": bool(ev.get("agent") or ev.get("apid"))}
+            # Older hooks labelled every finished turn as needs-input. Do not
+            # keep that ambiguity after upgrading; explicit questions retain
+            # their own kind, new typed decisions carry input_required.
+            if evinfo["kind"] == "needs-input" and not ev.get("input_required"):
+                evinfo["kind"] = "idle"
         screen = capture_tail(prefix, pane_id) if (alive or pane_id in state["hashes"]) else ""
         h = hashlib.sha1(screen.encode()).hexdigest()[:16] if screen else ""
         prev_entry = prev.get("hashes", {}).get(pane_id)
@@ -179,16 +185,26 @@ def daemon_once(prefix, paths):
             # instead of flickering to unknown between outputs. Exit still
             # supersedes; silence past the grace decays to unknown.
             changed = True
-        s, src = st.classify(agent, evinfo, screen, alive, prev_status,
+        previous = prev.get("panes", {}).get(pane_id, {})
+        classified_agent = agent or (previous.get("agent", "") if not alive else "")
+        s, src = st.classify(classified_agent, evinfo, screen, alive, prev_status,
                              changed, bound_ok)
-        # An exited agent whose turn-end event is still fresh reads as
-        # needs-input from the event; the process is gone, so it is done.
+        # Remember a previously idle agent on exit, without treating every
+        # ordinary idle shell as a completed agent.
+        generation = ("%s:%s" % (ident[1], ident[2]) if ident else
+                      previous.get("generation", str(pid)) if s == "done" else str(pid))
+        completed = bool(s == "idle" and ((bound_ok and ev and ev.get("completed")
+                          and st.event_usable(evinfo,time.time())) or previous.get("status") == "running"))
+        token = ev.get("t", "") if ev and (src == "event" or completed) else ""
+        notices = activity.notice(previous, s, generation, token, pane_id in viewed, completed)
+        action = ev.get("action", "") if bound_ok and st.event_usable(evinfo,time.time()) and ev else ""
         state["panes"][pane_id] = {
             "session": p["session"], "session_id": p["session_id"],
             "window": p["window_index"], "window_id": p["window_id"],
             "window_name": p["window_name"], "agent": agent,
             "status": s, "source": src, "pid": pid,
-            "active": p["active"], "updated": time.time()}
+            "active": p["active"], "updated": time.time(),
+            "caption": activity.caption(s, action, src), **notices}
     # Drop state for vanished panes (stale clears on exit/replacement).
     store.atomic_write(paths["state"], state)
     return state
@@ -484,6 +500,7 @@ def build_sessions(prefix, paths, selected_pane=""):
                            "display_name": ui.pane_name(p.get("custom_name", ""), p.get("title", ""),
                                                         info.get("agent", ""), p.get("path", ""), p.get("program", "")),
                            "custom_name": p.get("custom_name", ""),
+                           "caption": info.get("caption", ""), "unread": info.get("unread", False),
                            "current": p["active"] and p["win_active"],
                            "selected": p["pane_id"] == selected_pane})
     table = detect.process_table()
@@ -696,9 +713,8 @@ def cmd_sidebar(args):
                             project_id = rows[cursor]["ref"]
                             rows = ui.build_rows(sessions, project_id)
                     if not rel and b == 0 and last_redraw_rows:
-                        idx = hit_rows.get(y)
-                        if idx is not None and 0 <= idx < len(last_redraw_rows):
-                            chosen = last_redraw_rows[idx]
+                        chosen = ui.click_target(last_redraw_rows, hit_rows, x, y)
+                        if chosen is not None:
                             project_id = chosen.get("sess_id", project_id)
                             do_activate(prefix, paths, chosen, origin_session, origin_client)
                             next_poll = 0

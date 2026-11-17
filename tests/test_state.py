@@ -4,7 +4,7 @@ Reviewer reproductions covered:
 - exit supersedes fresh needs-approval event
 - blank/unbound events rejected; stale agent binding rejected
 - numbered prose never fires; real widgets fire
-- Stop-while-alive -> needs-input; Interrupt -> needs-input
+- Stop-while-alive and Interrupt -> idle; explicit questions require input
 - unknown payloads dropped (never running)
 """
 import os
@@ -60,7 +60,7 @@ class EventBindingTest(unittest.TestCase):
         s, src = st.classify("codex", ev, "plain", True, "running", False, True)
         self.assertEqual((s, src), ("needs-approval", "event"))
 
-    def test_bound_stop_means_needs_input(self):
+    def test_bound_explicit_request_means_needs_input(self):
         ev = {"kind": "needs-input", "ts": time.time(), "ok_gen": True,
               "had_agent": True}
         s, src = st.classify("codex", ev, "", True, "running", False, True)
@@ -108,19 +108,19 @@ class ScreenStrictnessTest(unittest.TestCase):
 class HookMappingTest(unittest.TestCase):
     def test_claude_codex_shapes(self):
         for agent in ("claude", "codex"):
-            self.assertEqual(adapters.hook_kind(agent, "SessionStart", {}), "needs-input")
+            self.assertEqual(adapters.hook_kind(agent, "SessionStart", {}), "idle")
             self.assertEqual(adapters.hook_kind(agent, "UserPromptSubmit", {}), "running")
             self.assertEqual(adapters.hook_kind(agent, "PreToolUse", {}), "running")
             self.assertEqual(adapters.hook_kind(agent, "PermissionRequest", {}),
                              "needs-approval")
-            self.assertEqual(adapters.hook_kind(agent, "Stop", {}), "needs-input")
+            self.assertEqual(adapters.hook_kind(agent, "Stop", {}), "idle")
             self.assertEqual(adapters.hook_kind(agent, "SessionEnd", {}), "done")
-            self.assertEqual(adapters.hook_kind(agent, "Interrupt", {}), "needs-input")
+            self.assertEqual(adapters.hook_kind(agent, "Interrupt", {}), "idle")
 
     def test_notification_parsed_not_fabricated(self):
         self.assertEqual(adapters.hook_kind(
             "claude", "Notification", {"message": "Waiting for user input"}),
-            "needs-input")
+            "idle")
         self.assertEqual(adapters.hook_kind(
             "claude", "Notification", {"message": "Permission prompt shown"}),
             "needs-approval")
@@ -147,7 +147,7 @@ class HookMappingTest(unittest.TestCase):
         # Codex 0.169 hook payload shape.
         p = {"hook_event_name": "Stop", "session_id": "xyz", "cwd": "/tmp"}
         self.assertEqual(adapters.hook_kind("codex", p["hook_event_name"], p),
-                         "needs-input")
+                         "idle")
 
 
 class MergeTest(unittest.TestCase):
@@ -236,19 +236,21 @@ class HookKindExtraTest(unittest.TestCase):
             "needs-approval")
         self.assertEqual(adapters.hook_kind(
             "claude", "Notification", {"notification_type": "idle_prompt"}),
-            "needs-input")
-        # Bare Notification means the agent waits: never dropped.
+            "idle")
+        # Generic waiting is idle; an explicitly typed decision requires input.
         self.assertEqual(adapters.hook_kind("claude", "Notification", {}),
-                         "needs-input")
+                         "idle")
+        for kind in ('input_needed','elicitation_dialog','question'):
+            self.assertEqual(adapters.hook_kind('claude','Notification',{'notification_type':kind}), 'needs-input')
 
     def test_auto_approval_no_attention(self):
         self.assertEqual(adapters.hook_kind(
             "claude", "PermissionRequest",
             {"tool_name": "Bash", "decision": "allow"}), "running")
 
-    def test_opencode_idle_maps_needs_input(self):
+    def test_opencode_idle_does_not_require_input(self):
         self.assertEqual(adapters.hook_kind("opencode", "Notification", {}),
-                         "needs-input")
+                         "idle")
 
 
 class StoreRoundtripTest(unittest.TestCase):
@@ -291,6 +293,14 @@ class ExistingTerminalTest(unittest.TestCase):
     def test_idle_prompt_and_working_footer(self):
         for agent in ("codex", "claude"):
             self.assertEqual(st.classify(agent, None, "Done.\n› \ncontext left", True,
-                                        "", False, False), ("needs-input", "screen"))
+                                        "", False, False), ("idle", "screen"))
             self.assertEqual(st.classify(agent, None, "› task\nesc to interrupt", True,
                                         "", False, False), ("running", "screen"))
+
+    def test_native_completion_clears_old_question_and_all_agents_stay_idle(self):
+        for agent in ('codex','claude','opencode'):
+            event={'kind':'idle','ts':time.time()}
+            self.assertEqual(st.classify(agent,event,'Continue? [y/n]:',True,'question',False,True),
+                             ('idle','event'))
+            self.assertEqual(st.classify(agent,None,'Continue? [y/n]:',True,'running',True,False),
+                             ('question','screen'))

@@ -85,7 +85,7 @@ def event_usable(ev, now, kind=None):
     if ts <= 0 or ts > now + CLOCK_SKEW:
         return False
     kind = kind if kind is not None else (ev.get("kind") if ev else None)
-    ttl = EVENT_TTL_ATTENTION if kind in ("needs-input", "needs-approval",
+    ttl = EVENT_TTL_ATTENTION if kind in ("idle", "needs-input", "needs-approval",
                                           "question") else EVENT_TTL_RUNNING
     if now - ts > ttl:
         return False
@@ -117,6 +117,8 @@ def classify(agent, event, screen_text, alive, prev, screen_changed,
     # 2. Explicit bound event.
     if fresh and kind in ("needs-input", "needs-approval", "question"):
         return kind, "event"
+    if fresh and kind == "idle":
+        return "idle", "event"
 
     # 3. Strict screen widgets.
     attn = screen_attention(screen_text or "")
@@ -130,7 +132,7 @@ def classify(agent, event, screen_text, alive, prev, screen_changed,
         if re.search(r"esc to interrupt|esc to cancel|ctrl.c to interrupt", tail, re.I):
             return "running", "screen"
         if re.search(r"^\s*[›❯](?:\s|$)", tail, re.M):
-            return "needs-input", "screen"
+            return "idle", "screen"
 
     # 4. Bound running event.
     if fresh and kind == "running":

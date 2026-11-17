@@ -15,7 +15,7 @@ import sys
 
 BASE = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.insert(0, BASE)
-from lib import adapters, detect, store  # noqa: E402
+from lib import adapters, detect, store, activity  # noqa: E402
 from lib.tmuxutil import resolve_socket, state_paths  # noqa: E402
 
 
@@ -102,7 +102,9 @@ def main(argv):
         except Exception:
             pass  # A failed diff checkpoint must never block an agent turn.
     store.append_event(paths, pane, kind, agent=agent, agent_pid=apid,
-                       agent_start=astart, socket_id=sid)
+                       agent_start=astart, socket_id=sid,
+                       action=activity.hook_action(raw_kind, payload),
+                       completed=raw_kind.lower() in ("stop", "session.idle", "sessionend"))
     return 0
 
 
