@@ -1,0 +1,22 @@
+import {installBridge} from '../plugins/opencode-tmux-agents/bridge.mjs';
+import assert from 'node:assert/strict';
+let active = 'a', reports = [], handlers = {}, cleaned = 0;
+const context = {ui: {router: {current: () => active ? {type:'session', sessionID:active} : {type:'home'}}},
+  data: {on: (event, fn) => {handlers[event] = fn; return () => cleaned++;}}};
+const stop = installBridge(context, (...args) => reports.push(args));
+handlers['permission.asked']({data:{sessionID:'b'}});
+assert.equal(reports.length,0);
+handlers['permission.asked']({data:{sessionID:'a'}});
+assert.deepEqual(reports.pop(),['PermissionRequest','a']);
+handlers['form.created']({data:{sessionID:'a'}});
+assert.deepEqual(reports.pop(),['FormCreated','a']);
+handlers['session.idle']({data:{sessionID:'a'}});
+assert.deepEqual(reports.pop(),['Stop','a']);
+active = null;
+handlers['permission.asked']({data:{sessionID:'a'}});
+assert.equal(reports.length,0);
+active = 'b';
+handlers['session.execution.started']({data:{sessionID:'b'}});
+assert.deepEqual(reports.pop(),['UserPromptSubmit','b']);
+stop(); assert.equal(cleaned,Object.keys(handlers).length);
+console.log('OpenCode session isolation and lifecycle passed');

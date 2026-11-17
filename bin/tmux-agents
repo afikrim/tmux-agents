@@ -1,0 +1,1357 @@
+#!/usr/bin/env python3
+"""tmux-agents: Corgi-like agent-native tmux sidebar (stdlib only).
+
+Commands: daemon-start | daemon [--once] | daemon-stop | ensure | hide |
+toggle | focus | sidebar | launch KIND [--window SPEC] [-- EXTRA...] |
+menu | event | status | install | uninstall | integrate PROV | unintegrate PROV
+Global opts: --socket NAME | --socket-path PATH (else inherit $TMUX).
+"""
+import argparse
+import fcntl
+import hashlib
+import json
+import os
+import re
+import shlex
+import signal
+import sys
+import time
+
+BASE = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+sys.path.insert(0, BASE)
+from lib import adapters, detect, status as st, store, ui, theme  # noqa: E402
+from lib.tmuxutil import (cli_socket_flags, resolve_socket,
+                           socket_id_of, state_paths,  # noqa: E402
+                          run_tmux, tmux_lines)
+
+SIDEBAR_WIDTH = 32
+MIN_WINDOW_WIDTH = 72
+POLL_INTERVAL = 2.0
+# Seconds a live agent keeps reading running/inferred after its last observed
+# screen change before decaying to unknown. Exit supersedes immediately.
+ACTIVITY_GRACE = 30.0
+HOOK_INDEX_LOW = 90
+LAUNCH_CMDS = {"codex": "codex", "claude": "claude", "opencode": "opencode"}
+MANAGED_OPTIONS = theme.TMUX_OPTIONS + [(False, "mouse", "on"), (False, "focus-events", "on")]
+
+
+def S(args):
+    return resolve_socket(explicit_name=args.socket or "",
+                          explicit_path=args.socket_path or "")
+
+
+def P(args):
+    return S(args)[0]
+
+
+def paths_of(args):
+    return state_paths(P(args))
+
+
+# ---------- topology ----------
+
+def list_all(prefix):
+    fmt = ("#{session_id}\t#{session_name}\t#{window_id}\t#{window_index}\t"
+           "#{window_name}\t#{pane_id}\t#{pane_pid}\t#{pane_active}\t"
+           "#{window_active}\t#{window_width}\t#{pane_current_path}\t"
+           "#{window_flags}\t#{@tmux_agents_sidebar}\t#{@tmux_agents_name}\t#{pane_title}")
+    panes = []
+    for line in tmux_lines(prefix, "list-panes", "-a", "-F", fmt):
+        parts = line.split("\t")
+        if len(parts) < 12:
+            continue
+        try:
+            pid = int(parts[6])
+        except ValueError:
+            pid = 0
+        try:
+            width = int(parts[9])
+        except ValueError:
+            width = 0
+        panes.append({"session_id": parts[0], "session": parts[1],
+                      "window_id": parts[2], "window_index": parts[3],
+                      "window_name": parts[4], "pane_id": parts[5], "pid": pid,
+                      "active": parts[7] == "1", "win_active": parts[8] == "1",
+                      "win_width": width, "path": parts[10],
+                      "sidebar": len(parts) > 12 and parts[12] == "1",
+                      "custom_name": parts[13] if len(parts) > 13 else "",
+                      "title": "\t".join(parts[14:]) if len(parts) > 14 else ""})
+    return panes
+
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b[()][0-9A-Z]|\x1b[>=M78]")
+
+
+def capture_tail(prefix, pane_id, n=40):
+    rc, out, _ = run_tmux(prefix, "capture-pane", "-p", "-t", pane_id,
+                           "-S", "-%d" % n, "-J", "-e")
+    if rc != 0:
+        return ""
+    # -e keeps colors for humans; the classifier must see plain text.
+    return _ANSI_RE.sub("", out)
+
+
+def esc_tmux(s):
+    # Quote for run-shell "..." double-quoted context.
+    return s.replace("\\", "\\\\").replace('"', '\\"').replace("$", "\\$").replace("`", "\\`")
+
+
+# ---------- daemon ----------
+
+def daemon_alive(paths):
+    try:
+        with open(paths["daemon_pid"]) as f:
+            pid_s, sid = (f.read().strip().split(None, 1) + [""])[:2]
+        pid = int(pid_s)
+    except (OSError, ValueError):
+        return 0
+    if pid <= 0:
+        return 0
+    if sid and sid != paths.get("sid", ""):
+        return 0  # pidfile belongs to a different server namespace
+    try:
+        p = __import__("subprocess").run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            capture_output=True, text=True, timeout=5)
+    except Exception:
+        return 0
+    cmd = p.stdout.strip() if p.returncode == 0 else ""
+    if p.returncode == 0 and "tmux-agents" in cmd and re.search(r"\bdaemon\b", cmd):
+        return pid
+    return 0
+
+
+def daemon_once(prefix, paths):
+    sid = socket_id_of(prefix)
+    prev = store.read_state(paths)
+    panes = list_all(prefix)
+    table = detect.process_table()
+    apids = set()
+    for p in panes:
+        if p["pid"] and not detect.is_sidebar_tree(p["pid"], table):
+            hit = detect.find_agent(p["pid"], table)
+            if hit:
+                apids.add(hit[1])
+    starts = detect.start_times(apids)
+    events = store.read_events(paths)
+    latest = {}
+    for e in events:
+        if e.get("sock", "") in ("", sid):
+            latest[e.get("pane")] = e
+    state = {"updated": time.time(), "panes": {},
+             "hashes": prev.get("hashes", {})}
+    for p in panes:
+        pane_id, pid = p["pane_id"], p["pid"]
+        if pid and detect.is_sidebar_tree(pid, table):
+            continue
+        ident = detect.agent_identity(pid, table, starts) if pid else None
+        agent = ident[0] if ident else ""
+        alive = ident is not None
+        ev = latest.get(pane_id)
+        bound_ok = False
+        evinfo = None
+        if ev and ev.get("kind"):
+            cur = (ident[1], ident[2]) if ident else (0, 0)
+            bound_ok = bool(alive and ev.get("apid") and
+                            ev.get("apid") == cur[0] and
+                            abs(float(ev.get("astart") or 0) - cur[1]) < 2 and
+                            ev.get("pane") == pane_id)
+            evinfo = {"kind": ev.get("kind"), "ts": ev.get("t", 0),
+                      "ok_gen": bound_ok,
+                      "had_agent": bool(ev.get("agent") or ev.get("apid"))}
+        screen = capture_tail(prefix, pane_id) if (alive or pane_id in state["hashes"]) else ""
+        h = hashlib.sha1(screen.encode()).hexdigest()[:16] if screen else ""
+        prev_entry = prev.get("hashes", {}).get(pane_id)
+        prev_h = prev_entry.get("h") if isinstance(prev_entry, dict) else prev_entry
+        prev_t = prev_entry.get("t", 0) if isinstance(prev_entry, dict) else 0
+        prev_status = prev.get("panes", {}).get(pane_id, {}).get("status", "")
+        changed = bool(h and prev_h and prev_h != h)
+        if h:
+            state["hashes"][pane_id] = {"h": h, "t": time.time() if changed or not prev_h else prev_t}
+        elif pane_id in state["hashes"] and not alive:
+            del state["hashes"][pane_id]
+        if not changed and alive and prev_status == "running" and prev_t \
+                and time.time() - prev_t < ACTIVITY_GRACE:
+            # Activity grace: a live agent whose screen did not move since the
+            # last observed output keeps reading running (source inferred)
+            # instead of flickering to unknown between outputs. Exit still
+            # supersedes; silence past the grace decays to unknown.
+            changed = True
+        s, src = st.classify(agent, evinfo, screen, alive, prev_status,
+                             changed, bound_ok)
+        # An exited agent whose turn-end event is still fresh reads as
+        # needs-input from the event; the process is gone, so it is done.
+        state["panes"][pane_id] = {
+            "session": p["session"], "session_id": p["session_id"],
+            "window": p["window_index"], "window_id": p["window_id"],
+            "window_name": p["window_name"], "agent": agent,
+            "status": s, "source": src, "pid": pid,
+            "active": p["active"], "updated": time.time()}
+    # Drop state for vanished panes (stale clears on exit/replacement).
+    store.atomic_write(paths["state"], state)
+    return state
+
+
+def daemon_loop(prefix, paths):
+    """One lock owner per server; exit when removed or the server goes away."""
+    store.ensure_dir(paths["dir"])
+    lock = os.open(paths["daemon_lock"], os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return
+        if os.path.exists(os.path.join(paths["dir"], "disabled")):
+            return
+        with open(paths["daemon_pid"], "w") as f:
+            f.write("%d %s\n" % (os.getpid(), paths["sid"]))
+        server_pid = run_tmux(prefix, "display-message", "-p", "#{pid}")[1].strip()
+        startup_deadline = time.monotonic() + 5
+        while not os.path.exists(os.path.join(paths["dir"], "disabled")):
+            if run_tmux(prefix, "display-message", "-p", "#{pid}")[1].strip() != server_pid:
+                break
+            if not list_all(prefix):
+                if time.monotonic() < startup_deadline:
+                    time.sleep(.1)
+                    continue
+                break
+            try:
+                daemon_once(prefix, paths)
+                ensure_sidebars(prefix, paths)
+            except Exception as exc:
+                # Retain a bounded diagnostic without storing terminal content.
+                store.atomic_write(os.path.join(paths["dir"], "error.json"),
+                                   {"type": type(exc).__name__, "time": time.time()})
+            time.sleep(POLL_INTERVAL)
+    finally:
+        os.close(lock)
+
+
+def proc_command(pid):
+    import subprocess
+    return subprocess.run(["ps", "-p", str(pid), "-o", "command="],
+                          capture_output=True, text=True, timeout=5).stdout.strip()
+
+
+def cmd_daemon_start(args):
+    import subprocess
+    prefix, paths = P(args), paths_of(args)
+    store.ensure_dir(paths["dir"])
+    if os.path.exists(os.path.join(paths["dir"], "disabled")) or daemon_alive(paths):
+        return
+    # The child acquires the lifetime lock; concurrent starters are harmless.
+    subprocess.Popen([sys.executable, os.path.join(BASE, "bin", "tmux-agents"),
+                      *cli_socket_flags(prefix), "daemon"],
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL, start_new_session=True,
+                     close_fds=True)
+    for _ in range(30):
+        if daemon_alive(paths):
+            return
+        time.sleep(0.05)
+
+
+def cmd_daemon_stop(args):
+    paths = paths_of(args)
+    pid = daemon_alive(paths)
+    if not pid:
+        print("daemon not running")
+        try:
+            os.unlink(paths["daemon_pid"])
+        except OSError:
+            pass
+        return
+    os.kill(pid, signal.SIGTERM)
+    for _ in range(20):
+        time.sleep(0.25)
+        if not daemon_alive(paths):
+            break
+    try:
+        os.unlink(paths["daemon_pid"])
+    except OSError:
+        pass
+    print("daemon stopped")
+
+
+# ---------- sidebars ----------
+
+def sidebar_panes(prefix, panes=None, table=None):
+    panes = panes if panes is not None else list_all(prefix)
+    table = table if table is not None else detect.process_table()
+    out = []
+    for p in panes:
+        if not p["pid"]:
+            continue
+        if p.get("sidebar") or detect.is_sidebar_tree(p["pid"], table):
+            out.append(p)
+        else:
+            rc, val, _ = run_tmux(prefix, "show-options", "-p", "-t",
+                                   p["pane_id"], "@tmux_agents_sidebar")
+            if rc == 0 and val.strip().endswith("1"):
+                out.append(p)
+    return out
+
+
+def ensure_sidebars(prefix, paths):
+    store.ensure_dir(paths["dir"])
+    lock = os.open(paths["ensure_lock"], os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if os.path.exists(os.path.join(paths["dir"], "disabled")):
+            return
+        return _ensure_locked(prefix, paths)
+    finally:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        os.close(lock)
+
+
+def _ensure_locked(prefix, paths):
+    panes = list_all(prefix)
+    table = detect.process_table()
+    by_win = {}
+    for p in panes:
+        key = (p["session_id"], p["window_id"])
+        info = by_win.setdefault(key, {"spec": p["window_id"],
+                                       "width": p["win_width"],
+                                       "path": p["path"], "panes": []})
+        info["panes"].append(p)
+    for key, info in by_win.items():
+        # A sidebar must not keep an otherwise closed agent window alive.
+        # Destructive cleanup trusts explicit pane ownership tags, never
+        # process-tree guesses (a real agent can spawn sidebar tests).
+        if info["panes"] and all(p.get("sidebar") for p in info["panes"]):
+            for pane in info["panes"]:
+                rc, tag, _ = run_tmux(prefix, "show-options", "-p", "-v", "-t",
+                                      pane["pane_id"], "@tmux_agents_sidebar")
+                if rc == 0 and tag.strip() == "1":
+                    # Kill only our pane. A user pane created since the
+                    # snapshot survives; never issue kill-window here.
+                    run_tmux(prefix, "kill-pane", "-t", pane["pane_id"])
+            continue
+        rc, hidden, _ = run_tmux(prefix, "show-window-options", "-v", "-t",
+                                  info["spec"], "@tmux_agents_hidden")
+        if rc == 0 and hidden.strip() == "1":
+            continue  # genuine persistent toggle: daemon never recreates
+        if info["width"] and info["width"] < MIN_WINDOW_WIDTH:
+            # Narrow: collapse an existing oversized sidebar, restore later.
+            for p in info["panes"]:
+                if (p.get("sidebar") or (p["pid"] and detect.is_sidebar_tree(p["pid"], table))):
+                    run_tmux(prefix, "kill-pane", "-t", p["pane_id"])
+            continue
+        if any((p.get("sidebar") or (p["pid"] and detect.is_sidebar_tree(p["pid"], table)))
+               for p in info["panes"]):
+            continue
+        rc, saved, _ = run_tmux(prefix, "show-window-options", "-v", "-t", info["spec"],
+                                  "@tmux_agents_saved_rename")
+        if rc != 0:
+            rc, value, _ = run_tmux(prefix, "show-window-options", "-v", "-t", info["spec"], "automatic-rename")
+            if rc == 0:
+                run_tmux(prefix, "set-window-option", "-t", info["spec"], "@tmux_agents_saved_rename", value.strip())
+                run_tmux(prefix, "set-window-option", "-t", info["spec"], "automatic-rename", "off")
+        script = os.path.join(BASE, "bin", "tmux-agents")
+        from lib.tmuxutil import state_root
+        command = ["env", "TMUX_AGENTS_STATE_DIR=" + state_root(), "TMUX_AGENTS_SIDEBAR=1",
+                   sys.executable, script, *cli_socket_flags(prefix), "sidebar"]
+        rc, out, err = run_tmux(prefix, "split-window", "-fhbl", str(SIDEBAR_WIDTH),
+                               "-d", "-t", info["spec"], "-c", info["path"] or os.path.expanduser("~"),
+                               "-P", "-F", "#{pane_id}", *command)
+        if rc != 0:
+            continue  # validate split success; never fail loudly
+        newpane = out.strip().splitlines()[0] if out.strip() else ""
+        if newpane.startswith("%"):
+            run_tmux(prefix, "set-option", "-p", "-t", newpane,
+                     "@tmux_agents_sidebar", "1")
+            run_tmux(prefix, "select-pane", "-T", "agents", "-t", newpane)
+
+
+def _current_window_id(prefix, explicit=""):
+    if explicit:
+        return explicit
+    rc, cur, _ = run_tmux(prefix, "display-message", "-p", "#{window_id}")
+    return cur.strip() if rc == 0 and cur.strip().startswith("@") else ""
+
+
+def _window_spec(prefix, window_id):
+    """Stable -t target for window-scoped commands; '' when unknown."""
+    if window_id and window_id.startswith("@"):
+        return window_id
+    return _current_window_id(prefix)
+
+
+def cmd_hide(args):
+    prefix = P(args)
+    if getattr(args, "all_windows", False):
+        targets = tmux_lines(prefix, "list-windows", "-a", "-F", "#{window_id}")
+        if not targets:
+            print("hidden")
+            return
+    else:
+        cur = _current_window_id(prefix, getattr(args, "window", ""))
+        if not cur:
+            print("no current window")
+            return 1
+        targets = [cur]
+    for t in targets:
+        run_tmux(prefix, "set-window-option", "-t", t, "@tmux_agents_hidden", "1")
+    targets = set(targets)
+    for p in sidebar_panes(prefix):
+        if getattr(args, "all_windows", False) or p["window_id"] in targets:
+            run_tmux(prefix, "kill-pane", "-t", p["pane_id"])
+    print("hidden")
+
+
+def cmd_toggle(args):
+    prefix = P(args)
+    cur = _current_window_id(prefix, getattr(args, "window", ""))
+    if not cur:
+        print("no current window")
+        return 1
+    rc, hidden, _ = run_tmux(prefix, "show-window-options", "-v", "-t", cur,
+                              "@tmux_agents_hidden")
+    if rc == 0 and hidden.strip() == "1":
+        run_tmux(prefix, "set-window-option", "-u", "-t", cur, "@tmux_agents_hidden")
+        ensure_sidebars(prefix, state_paths(prefix))
+        print("shown")
+    else:
+        run_tmux(prefix, "set-window-option", "-t", cur, "@tmux_agents_hidden", "1")
+        for p in sidebar_panes(prefix):
+            if p["window_id"] == cur:
+                run_tmux(prefix, "kill-pane", "-t", p["pane_id"])
+        print("hidden")
+
+
+def cmd_focus(args):
+    prefix = P(args)
+    cur = _current_window_id(prefix, getattr(args, "window", ""))
+    origin = getattr(args, "pane", "") or ""
+    if not origin:
+        rc, me, _ = run_tmux(prefix, "display-message", "-p", "#{pane_id}")
+        origin = me.strip() if rc == 0 else ""
+    table = detect.process_table()
+    for p in list_all(prefix):
+        if cur and p["window_id"] != cur:
+            continue
+        if (p.get("sidebar") or (p["pid"] and detect.is_sidebar_tree(p["pid"], table))):
+            if origin and origin.startswith("%"):
+                store.atomic_write(state_paths(prefix)["dir"] + "/focus.json",
+                                   {"pane": origin})
+            run_tmux(prefix, "select-pane", "-t", p["pane_id"])
+            return 0
+    ensure_sidebars(prefix, state_paths(prefix))
+    time.sleep(1.0)
+    for p in sidebar_panes(prefix, table=detect.process_table()):
+        if not cur or p["window_id"] == cur:
+            if origin and origin.startswith("%"):
+                store.atomic_write(state_paths(prefix)["dir"] + "/focus.json",
+                                   {"pane": origin})
+            run_tmux(prefix, "select-pane", "-t", p["pane_id"])
+            return 0
+    return 1
+
+
+# ---------- interactive sidebar ----------
+
+def build_sessions(prefix, paths, selected_pane=""):
+    state = store.read_state(paths)
+    panes = list_all(prefix)
+    rc, cur_sess, _ = run_tmux(prefix, "display-message", "-p", "#{session_id}")
+    cur_sess = cur_sess.strip() if rc == 0 else ""
+    sessions, order = {}, []
+    for p in panes:
+        s = sessions.setdefault(p["session_id"],
+                                {"id": p["session_id"], "name": p["session"],
+                                 "attached": p["session_id"] == cur_sess,
+                                 "windows": {}, "worder": []})
+        if p["session_id"] not in [o for o in order]:
+            order.append(p["session_id"])
+        w = s["windows"].setdefault(p["window_id"],
+                                    {"id": p["window_id"], "index": p["window_index"],
+                                     "name": p["window_name"], "active": False,
+                                     "panes": []})
+        if p["window_id"] not in s["worder"]:
+            s["worder"].append(p["window_id"])
+        info = state.get("panes", {}).get(p["pane_id"], {})
+        if p["active"] and p["win_active"]:
+            w["active"] = True
+        w["panes"].append({"id": p["pane_id"], "agent": info.get("agent", ""),
+                           "status": info.get("status", "unknown" if info else "idle"),
+                           "source": info.get("source", ""),
+                           "display_name": ui.pane_name(p.get("custom_name", ""), p.get("title", ""),
+                                                        info.get("agent", ""), p.get("path", "")),
+                           "custom_name": p.get("custom_name", ""),
+                           "current": p["active"] and p["win_active"],
+                           "selected": p["pane_id"] == selected_pane})
+    table = detect.process_table()
+    out = []
+    for sid in order:
+        s = sessions[sid]
+        wins = []
+        for wid in s["worder"]:
+            w = s["windows"][wid]
+            # Filter sidebar infrastructure panes.
+            real = []
+            for q in w["panes"]:
+                pp = next((x for x in panes if x["pane_id"] == q["id"]), None)
+                if pp and (pp.get("sidebar") or (pp["pid"] and detect.is_sidebar_tree(pp["pid"], table))):
+                    continue
+                real.append(q)
+            w["panes"] = real
+            wins.append(w)
+        s["windows"] = wins
+        del s["worder"]
+        out.append(s)
+    return out
+
+
+def cmd_sidebar(args):
+    import select
+    import termios
+    import tty
+    prefix, paths = P(args), paths_of(args)
+    fd = sys.stdin.fileno()
+    if not os.isatty(fd):
+        # Non-interactive fallback (tests / pipes): static dump.
+        for r in ui.build_rows(build_sessions(prefix, paths)):
+            print(("  " * r["depth"]) + r["label"])
+        return
+    old = termios.tcgetattr(fd)
+    winsize = [80, 24]
+
+    def on_winch(_s, _f):
+        import struct
+        try:
+            h, w = struct.unpack("HHHH", fcntl.ioctl(fd, termios.TIOCGWINSZ, b"\0" * 8))[:2]
+            winsize[:] = [w or 80, h or 24]
+        except OSError:
+            pass
+
+    try:
+        tty.setraw(fd)
+        sys.stdout.write("\x1b[?1049h\x1b[?1000h\x1b[?1006h\x1b[?25l" + ui.BASE + "\x1b[2J")
+        sys.stdout.flush()
+        signal.signal(signal.SIGWINCH, on_winch)
+        on_winch(None, None)
+        import fcntl as _f2
+        import struct
+        try:
+            h, w = struct.unpack("HH", _f2.ioctl(fd, termios.TIOCGWINSZ, "1234"))
+            winsize[0], winsize[1] = w or 80, h or 24
+        except Exception:
+            pass
+        cursor, top, selected = 0, 0, os.environ.get("TMUX_AGENTS_SELECTED", "")
+        last_redraw_rows = []
+        initialized, focused = False, True
+        origin_session, origin_client = origin_context(prefix)
+        import time as _t
+        next_poll, sessions = 0, []
+        editing, edit_text, edit_error = None, "", ""
+        scroll_key, scroll_since = None, _t.monotonic()
+        while True:
+            now = _t.time()
+            if now >= next_poll:
+                snapshot = store.read_state(paths)
+                if os.path.exists(paths["install"]) and now - snapshot.get("updated", 0) > 8:
+                    cmd_daemon_start(args)
+                sessions = build_sessions(prefix, paths, selected)
+                origin_session, origin_client = origin_context(prefix)
+                me = os.environ.get("TMUX_PANE", "")
+                if me:
+                    focused = run_tmux(prefix, "display-message", "-p", "-t", me, "#{pane_active}")[1].strip() == "1"
+                next_poll = now + 1.0
+            rows = ui.build_rows(sessions)
+            if not initialized:
+                cursor = next((i for i, row in enumerate(rows)
+                               if row["kind"] == "pane" and row.get("current")),
+                              next((i for i, row in enumerate(rows)
+                                    if row["kind"] == "session" and row.get("current")), 0))
+                initialized = True
+            last_redraw_rows = rows
+            cursor = max(0, min(cursor, len(rows) - 1)) if rows else 0
+            if rows and focused and rows[cursor]["kind"] not in ("session", "pane"):
+                cursor = ui.move_selection(rows, cursor, "j")
+            current = rows[cursor] if rows else {}
+            focus_key = (current.get("ref"), current.get("name"), winsize[0]) if focused and not editing else None
+            if focus_key != scroll_key:
+                scroll_key, scroll_since = focus_key, _t.monotonic()
+            name_space = ui.row_name_width(current, winsize[0]) if current else 0
+            scrolling = bool(focus_key and name_space > 0 and
+                             ui.cell_width(current.get("name", "")) > name_space)
+            lines, top, header_height, body_height = ui.frame(
+                rows, sessions, cursor, top, winsize[0], winsize[1], focused,
+                _t.monotonic() - scroll_since)
+            if editing and lines:
+                prompt = "Rename " + ("conversation" if editing["kind"] == "pane" else editing["kind"])
+                visible_edit = edit_text
+                while visible_edit and ui.cell_width(visible_edit) > max(0, winsize[0] - 4):
+                    visible_edit = visible_edit[1:]
+                overlay = [ui.styled(" " + prompt, winsize[0], "accent", bold=True),
+                           ui.styled(" > " + ui.fit(visible_edit, max(0, winsize[0] - 4), False), winsize[0], "fg", "selected"),
+                           ui.styled(" " + (edit_error or "enter save / esc cancel / ^U clear"), winsize[0], "muted")]
+                lines[-min(len(lines), 3):] = overlay[-min(len(lines), 3):]
+            # Overwrite the fixed frame without clearing between updates:
+            # no flashing terminal or jumping footer on status changes.
+            sys.stdout.write("\x1b[H" + "\r\n".join(lines))
+            sys.stdout.flush()
+            r, _, _ = select.select([fd], [], [], .15 if scrolling else 1.0)
+            if not r:
+                continue
+            try:
+                data = os.read(fd, 4096).decode("utf-8", "replace")
+            except OSError:
+                break
+            if not data:
+                break
+            for key in ui.parse_input(data):
+                if editing:
+                    if key == "esc" or key == "\x03":
+                        editing = None
+                    elif key == "enter":
+                        rc, error = rename_target(prefix, editing["kind"], editing["ref"], edit_text)
+                        if rc:
+                            edit_error = error
+                        else:
+                            editing = None
+                            sessions = build_sessions(prefix, paths, selected)
+                    elif key == "backspace":
+                        edit_text = edit_text[:-1]
+                    elif key == "\x15":
+                        edit_text = ""
+                    elif isinstance(key, str) and len(key) == 1 and key.isprintable():
+                        edit_text = (edit_text + key)[:120]
+                    continue
+                if key in ("r", "R") and rows and rows[cursor]["kind"] in ("session", "window", "pane"):
+                    chosen = rows[cursor]
+                    if key == "R":
+                        candidates = [row for row in rows if row["kind"] == "window"
+                                      and row.get("sess_id") == chosen.get("sess_id")]
+                        chosen = next((row for row in candidates if row["ref"] == chosen.get("win_id")),
+                                      next((row for row in candidates if row.get("current")),
+                                           next(iter(candidates), None)))
+                    if chosen:
+                        editing = dict(chosen)
+                        edit_text = editing.get("custom_name") or editing.get("name", "")
+                        edit_error = ""
+                    continue
+                if isinstance(key, tuple):
+                    _k, b, x, y, rel = key
+                    if not rel and b in (64, 65):
+                        cursor = ui.move_selection(rows, cursor, "up" if b == 64 else "down")
+                    if not rel and b == 0 and last_redraw_rows:
+                        local_y = y - header_height - 1
+                        idx = top + local_y
+                        if 0 <= local_y < body_height and 0 <= idx < len(last_redraw_rows):
+                            if last_redraw_rows[idx]["kind"] == "spacer":
+                                continue
+                            cursor = idx
+                            do_activate(prefix, paths, last_redraw_rows[cursor],
+                                        origin_session, origin_client)
+                            sessions = build_sessions(prefix, paths, selected)
+                    continue
+                if key in ("q", "esc"):
+                    # q returns focus and keeps the sidebar alive (the
+                    # pane-exited hook would otherwise respawn it and the
+                    # UI would visibly die). Use `hide` to remove it.
+                    go_back(prefix, paths)
+                    continue
+                if key in ("enter", "tab", "l", "right"):
+                    if rows:
+                        do_activate(prefix, paths, rows[cursor],
+                                    origin_session, origin_client)
+                    continue
+                if key == "x":
+                    chosen = rows[cursor] if rows else {}
+                    target = chosen.get("win_id", "")
+                    if chosen.get("kind") == "window":
+                        target = chosen["ref"]
+                    if chosen.get("kind") == "session":
+                        target = next((r["ref"] for r in rows if r["kind"] == "window"
+                                       and r.get("sess_id") == chosen["ref"]), "")
+                    do_menu(prefix, target, os.environ.get("TMUX_PANE", ""))
+                    continue
+                new = ui.move_selection(rows, cursor, key)
+                if isinstance(new, int):
+                    cursor = new
+    finally:
+        try:
+            os.set_blocking(sys.stdout.fileno(), False)
+        except Exception:
+            pass
+        try:
+            sys.stdout.write("\x1b[?1000l\x1b[?1006l\x1b[?25h\x1b[?1049l")
+            sys.stdout.flush()
+        except Exception:
+            pass
+        try:
+            # TCSANOW (not TCSADRAIN): never block on a full pty buffer.
+            termios.tcsetattr(fd, termios.TCSANOW, old)
+        except Exception:
+            pass
+
+
+def activation_plan(row, origin_session="", client=""):
+    """Row -> list of tmux argv commands to jump there (stable IDs). Pure.
+
+    Pane/window rows in another session switch that session's window first,
+    then select the pane; session rows switch-client with the ORIGIN client
+    (the terminal running the sidebar), never clients[0].
+    """
+    kind, ref = row["target"]
+    sess = row.get("sess_id", "") or ""
+    cmds = []
+    if kind == "pane":
+        if row.get("win_id"):
+            cmds.append(["select-window", "-t", row.get("win_id")])
+        cmds.append(["select-pane", "-t", ref])
+    elif kind == "window":
+        cmds.append(["select-window", "-t", ref])
+        if row.get("focus_pane"):
+            cmds.append(["select-pane", "-t", row["focus_pane"]])
+    else:
+        if client:
+            cmds.append(["switch-client", "-c", client, "-t", ref])
+        else:
+            cmds.append(["switch-client", "-t", ref])
+    if kind != "session" and sess and client and sess != origin_session:
+        cmds.append(["switch-client", "-c", client, "-t", sess])
+    return [c for c in cmds if c[-1]]
+
+
+def do_activate(prefix, paths, row, origin_session="", client=""):
+    for argv in activation_plan(row, origin_session, client):
+        rc, _, _ = run_tmux(prefix, *argv)
+        if rc != 0:
+            return rc
+    return 0
+
+
+def go_back(prefix, paths):
+    try:
+        import json
+        with open(os.path.join(paths["dir"], "focus.json")) as f:
+            pane = json.load(f).get("pane", "")
+        if pane:
+            rc, _, _ = run_tmux(prefix, "select-pane", "-t", pane)
+            if rc == 0:
+                return
+    except (OSError, ValueError):
+        pass
+    rc, cur, _ = run_tmux(prefix, "display-message", "-p", "#{window_id}")
+    if rc == 0 and cur.strip().startswith("@"):
+        table = detect.process_table()
+        for p in list_all(prefix):
+            if p["window_id"] != cur.strip():
+                continue
+            if p["pid"] and not detect.is_sidebar_tree(p["pid"], table):
+                run_tmux(prefix, "select-pane", "-t", p["pane_id"])
+                return
+
+
+def origin_context(prefix):
+    """(session_id, client_name) of the terminal running this sidebar.
+
+    The sidebar's own pane ($TMUX_PANE) identifies the session; the first
+    client attached to THAT session is the user's terminal (never an
+    arbitrary clients[0] from another session).
+    """
+    me = os.environ.get("TMUX_PANE", "")
+    sess = ""
+    if me:
+        rc, out, _ = run_tmux(prefix, "display-message", "-p", "-t", me,
+                               "#{session_id}")
+        if rc == 0 and out.strip().startswith("$"):
+            sess = out.strip()
+    client = ""
+    if sess:
+        cls = tmux_lines(prefix, "list-clients", "-t", sess, "-F",
+                         "#{client_name}")
+        if cls:
+            client = cls[0]
+    return sess, client
+
+
+def do_menu(prefix, origin_window="", origin_pane=""):
+    target = origin_window
+    if not target:
+        if origin_pane:
+            rc, cur, _ = run_tmux(prefix, "display-message", "-p",
+                                   "-t", origin_pane, "#{window_id}")
+            if rc == 0 and cur.strip():
+                target = cur.strip()
+        if not target:
+            rc, cur, _ = run_tmux(prefix, "display-message", "-p",
+                                   "#{window_id}")
+            target = cur.strip() if rc == 0 else ""
+    script = os.path.join(BASE, "bin", "tmux-agents")
+    sock = " ".join(shlex.quote(a) for a in cli_socket_flags(prefix))
+    items = []
+    for kind in ("codex", "claude", "opencode"):
+        command = shlex.join([sys.executable, script, *cli_socket_flags(prefix),
+                              "launch", "--window", target, kind])
+        cmd = 'run-shell "' + esc_tmux(command) + '"'
+        items += [kind[0].upper() + kind[1:], kind[0], cmd]
+    run_tmux(prefix, "display-menu", "-T", "New agent", "-t", target, *items)
+
+
+def rename_target(prefix, kind, target, name):
+    name = ui.san(name, 0).strip()[:120]
+    if kind == "pane":
+        if name:
+            rc, _, error = run_tmux(prefix, "set-option", "-p", "-t", target, "@tmux_agents_name", name)
+        else:
+            rc, _, error = run_tmux(prefix, "set-option", "-pu", "-t", target, "@tmux_agents_name")
+    elif kind in ("session", "window"):
+        if not name:
+            return 1, "Name cannot be empty"
+        rc, _, error = run_tmux(prefix, "rename-" + kind, "-t", target, "--", name)
+    else:
+        return 1, "Select a conversation, session or window"
+    return rc, ui.san(error, 0).strip()
+
+
+# ---------- launch (never send-keys; always a fresh window) ----------
+
+def cmd_launch(args, prefix=None):
+    prefix = prefix if prefix is not None else P(args)
+    kind = args.kind
+    prog = args.exe or LAUNCH_CMDS[kind]
+    extra = list(args.launch_args or [])
+    if extra[:1] == ["--"]:
+        extra = extra[1:]
+    if args.window:
+        winspec = args.window
+    else:
+        rc, cur, _ = run_tmux(prefix, "display-message", "-p", "#{window_id}")
+        winspec = cur.strip() if rc == 0 else ""
+    cwd, sess = "", ""
+    table = detect.process_table()
+    for p in list_all(prefix):
+        if winspec and p["window_id"] != winspec:
+            continue
+        if (p.get("sidebar") or (p["pid"] and detect.is_sidebar_tree(p["pid"], table))):
+            continue
+        if not cwd:
+            cwd, sess = p["path"], p["session_id"]
+        if p["active"]:
+            cwd, sess = p["path"], p["session_id"]
+            break
+    if not cwd or cwd == "$HOME":
+        cwd = os.path.expanduser("~")
+    # A dedicated Codex process keeps hook environment tied to this pane,
+    # rather than inheriting the first pane of a shared app-server daemon.
+    argv = [prog] + (["--no-daemon"] if kind == "codex" and not args.exe else []) + extra
+    dest = ["-t", sess] if sess else []
+    env_args = []
+    for item in (args.env or []):
+        if "=" in item:
+            env_args += ["-e", item]
+    rc, _, err = run_tmux(prefix, "new-window", *dest, *env_args, "-n", kind,
+                           "-c", cwd, *argv)
+    if rc != 0:
+        print("launch failed: %s" % err.strip())
+        return 1
+    return 0
+
+
+# ---------- manual/test event (binds to current agent identity) ----------
+
+def cmd_event(args):
+    prefix, paths = P(args), paths_of(args)
+    sid = socket_id_of(prefix)
+    rc, out, _ = run_tmux(prefix, "display-message", "-p", "-t", args.pane,
+                           "#{pane_pid}")
+    pane_pid = int(out.strip()) if rc == 0 and out.strip().isdigit() else 0
+    apid, astart, agent = 0, 0, args.agent or ""
+    if pane_pid:
+        table = detect.process_table()
+        ident = detect.agent_identity(pane_pid, table)
+        if ident:
+            agent = agent or ident[0]
+            apid, astart = ident[1], ident[2]
+    store.append_event(paths, args.pane, args.kind, agent=agent,
+                       agent_pid=apid, agent_start=astart, socket_id=sid)
+    print("event recorded")
+
+
+# ---------- status ----------
+
+def cmd_status(args):
+    import json
+    print(json.dumps(store.read_state(paths_of(args)), indent=1))
+
+
+# ---------- install / uninstall ----------
+
+CONF_HEAD = """# >>> tmux-agents >>>
+# tmux-agents (Corgi-like sidebar). Additive block; safe to remove.
+# Manage with: tmux-agents install/uninstall/integrate. Hooks use index {idx}
+# so existing hooks are never replaced. Binds carry the server socket and the
+# invoking pane/window (#{...} expands at key-press time in that context).
+"""
+
+# Start the singleton daemon on config load and new sessions.
+# Whole shell command is ONE single-quoted tmux arg; no nested quotes.
+RUN_LINE = "run-shell -b '__BASE__ __SOCK__ daemon-start'"
+HOOK_LINES = [
+    ("after-new-session", "run-shell -b '__BASE__ __SOCK__ daemon-start'"),
+    ("after-new-window", "run-shell -b '__BASE__ __SOCK__ ensure'"),
+    ("after-split-window", "run-shell -b 'sleep 1; __BASE__ __SOCK__ ensure'"),
+    ("client-attached", "run-shell -b '__BASE__ __SOCK__ daemon-start'"),
+    ("pane-exited", "run-shell -b 'sleep 1; __BASE__ __SOCK__ ensure'"),
+]
+
+# Keys: M-e focus exact sidebar, prefix S per-window toggle, prefix a menu.
+# Prefix x/o/C and all other defaults are left untouched.
+KEY_LINES = [
+    ('root', 'M-e', 'run-shell \'__BASE__ __SOCK__ focus --window "#{window_id}" --pane "#{pane_id}\''),
+    ('prefix', 'S', 'run-shell \'__BASE__ __SOCK__ toggle --window "#{window_id}"\''),
+    ('prefix', 'a', 'run-shell \'__BASE__ __SOCK__ menu --window "#{window_id}" --pane "#{pane_id}"\''),
+]
+CONF_TAIL = "# <<< tmux-agents <<<\n"
+
+# Legacy default bindings clobbered by milestone 1 (exact argv, no splitting).
+LEGACY_DEFAULTS = {
+    "x": ["confirm-before", "-p", "kill-pane #P? (y/n)", "kill-pane"],
+    "o": ["select-pane", "-t", ":.+"],
+    "C": ["customize-mode", "-Z"],
+}
+
+HOOK_NAMES = [h for h, _ in HOOK_LINES]
+
+
+def tmux_conf_path():
+    from lib.tmuxutil import tmux_conf_path as _p
+    return _p()
+
+
+def bind_exists(prefix, table, key):
+    if table == "root":
+        rc, out, _ = run_tmux(prefix, "list-keys", "-T", "root", key)
+    else:
+        rc, out, _ = run_tmux(prefix, "list-keys", "-T", table, key)
+    return rc == 0 and bool(out.strip())
+
+
+def binding_is_ours(prefix, table, key):
+    if table == "root":
+        rc, out, _ = run_tmux(prefix, "list-keys", "-T", "root", key)
+    else:
+        rc, out, _ = run_tmux(prefix, "list-keys", "-T", table, key)
+    return rc == 0 and "tmux-agents" in out
+
+
+def saved_binding(prefix, table, key):
+    """Raw `bind-key ...` line for later restore, or ''."""
+    if table == "root":
+        rc, out, _ = run_tmux(prefix, "list-keys", "-T", "root", key)
+    else:
+        rc, out, _ = run_tmux(prefix, "list-keys", "-T", table, key)
+    if rc != 0 or not out.strip():
+        return ""
+    line = out.strip().splitlines()[0]
+    if "tmux-agents" in line:
+        return ""
+    return line
+
+
+def global_hook_lines(prefix):
+    # tmux stores pane hooks in global window options, separately from
+    # session hooks. Inspect both when identifying/removing owned entries.
+    return tmux_lines(prefix, "show-hooks", "-g") + tmux_lines(prefix, "show-hooks", "-gw")
+
+
+def find_free_hook_index(prefix, keep=None):
+    out = "\n".join(global_hook_lines(prefix))
+    rc = 0
+    used = set()
+    if rc == 0:
+        for m in re.finditer(
+                r"^(after-new-session|after-new-window|after-split-window|"
+                r"client-attached|pane-exited)\[(\d+)\]", out, re.M):
+            used.add(int(m.group(2)))
+    if keep is not None and keep not in used:
+        return keep
+    if keep is not None:
+        # Our owned index is taken by someone else: scan for OUR command at
+        # any index and reuse the first one found.
+        out = "\n".join(global_hook_lines(prefix))
+        rc = 0
+        if rc == 0:
+            for m in re.finditer(
+                    r"^(after-new-session|after-new-window|after-split-window|"
+                    r"client-attached|pane-exited)\[(\d+)\][^\n]*tmux-agents",
+                    out, re.M):
+                return int(m.group(2))
+    for i in range(HOOK_INDEX_LOW, 100):
+        if i not in used:
+            return i
+    return max(used | {HOOK_INDEX_LOW - 1}) + 1
+
+
+def owned_hook_indices(prefix):
+    """All hook indices whose command mentions tmux-agents (incl. legacy [0])."""
+    out = "\n".join(global_hook_lines(prefix))
+    rc = 0
+    found = set()
+    if rc != 0:
+        return found
+    for m in re.finditer(
+            r"^(after-new-session|after-new-window|after-split-window|"
+            r"client-attached|pane-exited)(?:\[(\d+)\])?[^\n]*tmux-agents",
+            out, re.M):
+        found.add(int(m.group(2)) if m.group(2) is not None else -1)
+    return found
+
+
+def unindexed_legacy_hooks(prefix):
+    """Unindexed (milestone-1) hook entries containing tmux-agents."""
+    out = "\n".join(global_hook_lines(prefix))
+    rc = 0
+    names = set()
+    if rc != 0:
+        return names
+    for m in re.finditer(
+            r"^(after-new-session|after-new-window|after-split-window|"
+            r"client-attached|pane-exited)\s+.*tmux-agents", out, re.M):
+        names.add(m.group(1))
+    return names
+
+
+def read_install_meta(paths):
+    try:
+        with open(paths["install"]) as f:
+            d = json.load(f)
+            return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def capture_baseline(prefix, paths, index):
+    store.ensure_dir(paths["dir"])
+    meta = read_install_meta(paths)
+    saved_theme = meta.setdefault("saved_theme", {})
+    for window, name, _ in MANAGED_OPTIONS:
+        if name not in saved_theme:
+            flags = ["-g", "-w"] if window else ["-g"]
+            rc, value, _ = run_tmux(prefix, "show-options", *flags, "-v", name)
+            if rc == 0:
+                saved_theme[name] = value.rstrip("\n")
+    saved_keys = meta.setdefault("saved_keys", {})
+    for table, key, _ in KEY_LINES:
+        saved_keys.setdefault("%s:%s" % (table, key), saved_binding(prefix, table, key))
+    # Resolve against the live server, including its first config load.
+    index = find_free_hook_index(prefix, keep=meta.get("hook_index", index))
+    from lib.tmuxutil import state_root
+    env = ["TMUX_AGENTS_STATE_DIR=" + state_root()]
+    for key in ("TMUX_AGENTS_TMUX_CONF", "TMUX_AGENTS_CLAUDE_SETTINGS",
+                "TMUX_AGENTS_CODEX_HOOKS", "TMUX_AGENTS_OPENCODE_JSONC"):
+        if os.environ.get(key):
+            env.append(key + "=" + os.environ[key])
+    command = shlex.join(["env", *env, sys.executable,
+                          os.path.join(BASE, "bin", "tmux-agents"), *cli_socket_flags(prefix)])
+    for hook, _ in HOOK_LINES:
+        suffix = " daemon-start" if hook in ("after-new-session", "client-attached") else " ensure"
+        action = 'run-shell -b "' + esc_tmux(command + suffix) + '"'
+        rc, _, err = run_tmux(prefix, "set-hook", "-g", "%s[%d]" % (hook, index), action)
+        if rc:
+            raise RuntimeError(err)
+    meta["hook_index"] = index
+    store.atomic_write(paths["install"], meta)
+    return meta
+
+
+def cmd_install(args):
+    import shutil
+    prefix = P(args)
+    running = run_tmux(prefix, "display-message", "-p", "#{socket_path}")[0] == 0
+    home = tmux_conf_path()
+    ts = time.strftime("%Y%m%d-%H%M%S")
+    script = os.path.join(BASE, "bin", "tmux-agents")
+    paths = state_paths(prefix)
+    store.ensure_dir(paths["dir"])
+    meta = read_install_meta(paths)
+    try:
+        os.unlink(os.path.join(paths["dir"], "disabled"))
+    except FileNotFoundError:
+        pass
+    cur = open(home).read() if os.path.exists(home) else ""
+    if "# >>> tmux-agents >>>" in cur:
+        shutil.copy2(home, home + ".pre-tmux-agents-" + ts)
+        pre, _, post = cur.partition("# >>> tmux-agents >>>")
+        _, _, post = post.partition("# <<< tmux-agents <<<")
+        cur = pre + post
+    else:
+        if os.path.exists(home):
+            shutil.copy2(home, home + ".pre-tmux-agents-" + ts)
+            print("backup: %s" % (home + ".pre-tmux-agents-" + ts))
+    # Socket baked into binds: canonical path so hooks/keys always hit this
+    # server even when invoked without $TMUX.
+    rc, sockpath, _ = run_tmux(prefix, "display-message", "-p", "#{socket_path}")
+    sockpath = sockpath.strip() if rc == 0 else ""
+    from lib.tmuxutil import state_root
+    overrides = ["TMUX_AGENTS_STATE_DIR=" + state_root()]
+    for key in ("TMUX_AGENTS_TMUX_CONF", "TMUX_AGENTS_CLAUDE_SETTINGS",
+                "TMUX_AGENTS_CODEX_HOOKS", "TMUX_AGENTS_OPENCODE_JSONC"):
+        if os.environ.get(key):
+            overrides.append(key + "=" + os.environ[key])
+    # Expanded by tmux when run-shell executes, including the first startup.
+    socket_flags = ["--socket-path", "#{socket_path}"]
+    shellbase = shlex.join(["env", *overrides, sys.executable, script, *socket_flags])
+    idx = find_free_hook_index(prefix, keep=meta.get("hook_index"))
+    block = CONF_HEAD.replace("{idx}", str(idx))
+    def quote(arg):
+        return '"' + esc_tmux(arg) + '"'
+    block += "run-shell " + quote(shellbase + " capture-baseline --hook-index " + str(idx)) + "\n"
+    block += "run-shell -b " + quote(shellbase + " daemon-start") + "\n"
+    for table, key, action in (("root", "M-e", "focus"), ("prefix", "S", "toggle"),
+                               ("prefix", "a", "menu")):
+        command = shellbase + " " + action + " --window '#{window_id}'"
+        if action != "toggle":
+            command += " --pane '#{pane_id}'"
+        block += "bind-key -T %s %s run-shell %s\n" % (table, key, quote(command))
+    block += "\n"
+    saved_theme = meta.get("saved_theme", {})
+    for window, name, value in MANAGED_OPTIONS:
+        flags = ["-g", "-w"] if window else ["-g"]
+        if name not in saved_theme:
+            rc, previous, _ = run_tmux(prefix, "show-options", *flags, "-v", name)
+            if rc == 0:
+                saved_theme[name] = previous.rstrip("\n")
+        block += "set-option " + " ".join(flags) + " " + name + " " + quote(value) + "\n"
+    meta["saved_theme"] = saved_theme
+    # Save pre-existing bindings so uninstall restores exactly (or unbinds).
+    saved = {}
+    for table, key, cmdline in KEY_LINES:
+        prev = saved_binding(prefix, table, key)
+        saved["%s:%s" % (table, key)] = meta.get("saved_keys", {}).get(
+            "%s:%s" % (table, key), prev)
+    meta.update({"hook_index": idx, "installed": ts, "saved_keys": saved if running else {},
+                 "socket_path": sockpath})
+    store.atomic_write(paths["install"], meta)
+    # Remove legacy milestone-1 bindings that clobbered defaults (x/C/G/O);
+    # restore defaults ONLY where the binding is ours.
+    for key in ("x", "C", "G", "O"):
+        if binding_is_ours(prefix, "prefix", key):
+            run_tmux(prefix, "unbind-key", "-T", "prefix", key)
+    for key, argv in LEGACY_DEFAULTS.items():
+        if binding_is_ours(prefix, "prefix", key):
+            run_tmux(prefix, "bind-key", "-T", "prefix", key, *argv)
+    adapters._write_config(home, cur.rstrip("\n") + "\n\n" + block + CONF_TAIL)
+    print("installed with hook index %d" % idx)
+    if not running:
+        print("Configuration saved. Start tmux to activate the sidebar (no server was started).")
+        return
+    rc, out, err = run_tmux(prefix, "source-file", home)
+    print("sourced rc=%d %s" % (rc, (err or out).strip()[:200]))
+    if rc:
+        raise RuntimeError("tmux rejected the configuration; restore the reported backup")
+    # Upgrade path: respawn ONLY sidebar panes (infrastructure, no user work)
+    # so old print-only sidebars are replaced; user panes/focus preserved.
+    try:
+        rc, active, _ = run_tmux(prefix, "display-message", "-p", "#{pane_id}")
+        active = active.strip() if rc == 0 else ""
+    except Exception:
+        active = ""
+    for p in sidebar_panes(prefix):
+        run_tmux(prefix, "kill-pane", "-t", p["pane_id"])
+    time.sleep(0.5)
+    cmd_daemon_start(args)
+    ensure_sidebars(prefix, paths)
+    if active and active.startswith("%"):
+        run_tmux(prefix, "select-pane", "-t", active)
+    print("daemon started; sidebars ensured")
+
+
+def cmd_uninstall(args):
+    import shutil
+    prefix, paths = P(args), paths_of(args)
+    meta = read_install_meta(paths)
+    idx = meta.get("hook_index", 99)
+    # A tombstone also stops already queued hook commands after uninstall.
+    store.atomic_write(os.path.join(paths["dir"], "disabled"), {"time": time.time()})
+    # Remove only hook entries owned by this installation. show-hooks has
+    # no -v flag; inspect the serialized global array instead.
+    for line in global_hook_lines(prefix):
+        if os.path.join(BASE, "bin", "tmux-agents") in line:
+            run_tmux(prefix, "set-hook", "-gu", line.split()[0])
+    # 2. Stop only our verified daemon (pidfile + cmdline + socket match).
+    cmd_daemon_stop(args)
+    # Wait for any in-flight ensure to finish before removing its panes.
+    lock = os.open(paths["ensure_lock"], os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        for p in sidebar_panes(prefix):
+            run_tmux(prefix, "kill-pane", "-t", p["pane_id"])
+    finally:
+        os.close(lock)
+    for wid in tmux_lines(prefix, "list-windows", "-a", "-F", "#{window_id}"):
+        rc, value, _ = run_tmux(prefix, "show-window-options", "-v", "-t", wid, "@tmux_agents_saved_rename")
+        if rc == 0:
+            run_tmux(prefix, "set-window-option", "-t", wid, "automatic-rename", value.strip())
+        for option in ("@tmux_agents_saved_rename", "@tmux_agents_hidden"):
+            run_tmux(prefix, "set-window-option", "-u", "-t", wid, option)
+    # 4. Remove our keys; restore exactly what was there before install.
+    saved = meta.get("saved_keys", {}) or {}
+    for table, key, _cmdline in KEY_LINES:
+        if not binding_is_ours(prefix, table, key):
+            continue
+        if table == "root":
+            run_tmux(prefix, "unbind-key", "-n", key)
+        else:
+            run_tmux(prefix, "unbind-key", "-T", table, key)
+        prev = saved.get("%s:%s" % (table, key), "")
+        if prev and prev.startswith("bind-key"):
+            try:
+                run_tmux(prefix, *shlex.split(prev))
+            except ValueError:
+                pass
+    for window, name, value in MANAGED_OPTIONS:
+        flags = ["-g", "-w"] if window else ["-g"]
+        rc, current, _ = run_tmux(prefix, "show-options", *flags, "-v", name)
+        previous = meta.get("saved_theme", {}).get(name)
+        if rc == 0 and current.rstrip("\n") == value and previous is not None:
+            run_tmux(prefix, "set-option", *flags, name, previous)
+    # 5. Remove config block (backup first), preserve everything else.
+    home = tmux_conf_path()
+    if os.path.exists(home):
+        cur = open(home).read()
+        if "# >>> tmux-agents >>>" in cur:
+            ts = time.strftime("%Y%m%d-%H%M%S")
+            shutil.copy2(home, home + ".pre-tmux-agents-rm-" + ts)
+            pre, _, post = cur.partition("# >>> tmux-agents >>>")
+            _, _, post = post.partition("# <<< tmux-agents <<<")
+            with open(home, "w") as f:
+                f.write(pre.rstrip() + "\n" + post.lstrip("\n"))
+            print("block removed; backup %s" % (home + ".pre-tmux-agents-rm-" + ts))
+    # 6. Provider integrations (opt-out keeps them).
+    if not getattr(args, "keep_integrations", False):
+        for prov in ("claude", "codex", "opencode"):
+            try:
+                path, n = adapters.unintegrate(prov)
+                if n:
+                    print("unintegrated %s (%d, %s)" % (prov, n, path))
+            except Exception as e:
+                print("unintegrate %s skipped: %s" % (prov, e))
+    else:
+        print("provider integrations kept (--keep-integrations)")
+    print("uninstalled")
+
+# ---------- CLI ----------
+
+def main(argv=None):
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--socket", default="")
+    ap.add_argument("--socket-path", default="")
+    sub = ap.add_subparsers(dest="command", required=True)
+    d = sub.add_parser("daemon"); d.add_argument("--once", action="store_true")
+    sub.add_parser("daemon-start"); sub.add_parser("daemon-stop")
+    sub.add_parser("sidebar"); sub.add_parser("ensure")
+    h = sub.add_parser("hide"); h.add_argument("--all-windows", action="store_true")
+    h.add_argument("--window", default="")
+    for name in ("toggle", "focus", "menu"):
+        p = sub.add_parser(name)
+        p.add_argument("--window", default="")
+        p.add_argument("--pane", default="")
+    rn = sub.add_parser("rename", help="rename a sidebar conversation, session or window")
+    targets = rn.add_mutually_exclusive_group()
+    targets.add_argument("--pane")
+    targets.add_argument("--session")
+    targets.add_argument("--window")
+    rn.add_argument("--reset", action="store_true", help="restore automatic conversation title")
+    rn.add_argument("name", nargs="?")
+    sub.add_parser("status"); sub.add_parser("install")
+    cp = sub.add_parser("capture-baseline", help=argparse.SUPPRESS)
+    cp.add_argument("--hook-index", type=int, required=True)
+    sub.add_parser("doctor", help="check portable runtime prerequisites")
+    un = sub.add_parser("uninstall")
+    un.add_argument("--keep-integrations", action="store_true",
+                    help="keep Claude/Codex/OpenCode hook entries")
+    e = sub.add_parser("event")
+    e.add_argument("--pane", required=True); e.add_argument("--kind", required=True)
+    e.add_argument("--agent", default="")
+    lz = sub.add_parser("launch")
+    lz.add_argument("--window", default="",
+                    help="target window id (default: current window)")
+    lz.add_argument("--exe", default="",
+                    help="override agent executable (tests / wrappers)")
+    lz.add_argument("--env", action="append", default=[],
+                    metavar="KEY=VALUE",
+                    help="extra environment for the new window (repeatable)")
+    lz.add_argument("kind", choices=["codex", "claude", "opencode"])
+    lz.add_argument("launch_args", nargs=argparse.REMAINDER,
+                    help="args for the agent; put options above before KIND, "
+                         "use '--' before dash-leading agent args")
+    ig = sub.add_parser("integrate"); ig.add_argument("provider", choices=["claude", "codex", "opencode"])
+    ug = sub.add_parser("unintegrate"); ug.add_argument("provider", choices=["claude", "codex", "opencode"])
+    args = ap.parse_args(argv)
+    if args.command == "daemon":
+        prefix, paths = P(args), paths_of(args)
+        if args.once:
+            import json
+            print(json.dumps(daemon_once(prefix, paths), indent=1)[:3000])
+        else:
+            daemon_loop(prefix, paths)
+    elif args.command == "daemon-start":
+        cmd_daemon_start(args)
+    elif args.command == "daemon-stop":
+        cmd_daemon_stop(args)
+    elif args.command == "sidebar":
+        cmd_sidebar(args)
+    elif args.command == "ensure":
+        ensure_sidebars(P(args), paths_of(args))
+    elif args.command == "hide":
+        cmd_hide(args)
+    elif args.command == "toggle":
+        cmd_toggle(args)
+    elif args.command == "focus":
+        cmd_focus(args)
+    elif args.command == "menu":
+        do_menu(P(args), getattr(args, "window", ""),
+                getattr(args, "pane", ""))
+    elif args.command == "launch":
+        sys.exit(cmd_launch(args) or 0)
+    elif args.command == "event":
+        cmd_event(args)
+    elif args.command == "rename":
+        if args.name is None and not args.reset:
+            ap.error("provide a name, or --reset to restore the automatic title")
+        prefix = P(args)
+        kind = "session" if args.session else "window" if args.window else "pane"
+        target = args.session or args.window or args.pane
+        if not target:
+            target = run_tmux(prefix, "display-message", "-p", "#{pane_id}")[1].strip()
+        if args.reset and kind != "pane":
+            ap.error("--reset applies to conversation panes only")
+        rc, error = rename_target(prefix, kind, target, "" if args.reset else args.name)
+        if rc:
+            print(error, file=sys.stderr)
+            sys.exit(rc)
+    elif args.command == "status":
+        cmd_status(args)
+    elif args.command == "install":
+        cmd_install(args)
+    elif args.command == "capture-baseline":
+        capture_baseline(P(args), paths_of(args), args.hook_index)
+    elif args.command == "doctor":
+        from lib.portable import doctor
+        sys.exit(doctor())
+    elif args.command == "uninstall":
+        cmd_uninstall(args)
+    elif args.command == "integrate":
+        path, changed, bak = adapters.integrate(args.provider)
+        print("%s changed=%s backup=%s" % (path, changed, bak or "-"))
+        if args.provider == "codex":
+            print("NOTE: Codex requires hook trust: open /hooks and approve the "
+                  "new tmux-agents handler. Until approved, Codex ignores it. "
+                  "No bypass is used. Merging added entries to ~/.codex/hooks.json "
+                  "only; run `tmux-agents unintegrate codex` to remove.")
+    elif args.command == "unintegrate":
+        path, n = adapters.unintegrate(args.provider)
+        print("%s removed=%d" % (path, n))
+
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,97 @@
+#!/usr/bin/env python3
+"""Native lifecycle hook -> tmux-agents event log (stdlib only).
+
+Invoked by Claude/Codex hook runners (JSON on stdin) and by our OpenCode
+TUI plugin (JSON with hook_event_name). Resolves the tmux pane from $TMUX_PANE,
+binds the event to the CURRENT agent identity (pid + start time) and socket,
+and appends metadata only. Never logs pane content or conversation text.
+
+Mapping is conservative: unrecognized payloads are dropped silently.
+"""
+import json
+import os
+import subprocess
+import sys
+
+BASE = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+sys.path.insert(0, BASE)
+from lib import adapters, detect, store  # noqa: E402
+from lib.tmuxutil import resolve_socket, state_paths  # noqa: E402
+
+
+def detect_pane(prefix):
+    pane = os.environ.get("TMUX_PANE", "")
+    if pane:
+        return pane
+    try:
+        p = subprocess.run(["tmux", *prefix, "display-message", "-p", "#{pane_id}"],
+                           capture_output=True, text=True, timeout=5)
+        if p.returncode == 0 and p.stdout.strip().startswith("%"):
+            return p.stdout.strip()
+    except Exception:
+        pass
+    return ""
+
+
+def read_payload():
+    if sys.stdin.isatty():
+        return {}
+    try:
+        raw = sys.stdin.read(65536)
+        data = json.loads(raw) if raw.strip() else {}
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def main(argv):
+    agent = os.environ.get("TMUX_AGENTS_NAME", "")
+    pane, raw_kind = "", ""
+    i = 0
+    while i < len(argv):
+        if argv[i] == "--agent" and i + 1 < len(argv):
+            agent = argv[i + 1]; i += 2
+        elif argv[i] == "--pane" and i + 1 < len(argv):
+            pane = argv[i + 1]; i += 2
+        elif argv[i] == "--kind" and i + 1 < len(argv):
+            raw_kind = argv[i + 1]; i += 2
+        else:
+            i += 1
+    payload = read_payload()
+    raw_kind = raw_kind or str(payload.get("hook_event_name", "") or
+                               payload.get("event", "") or "")
+    agent = agent or str(payload.get("agent", "") or "")
+    kind = adapters.hook_kind(agent or "hook", raw_kind, payload)
+    if not kind:
+        return 0  # unknown payloads never fabricate attention
+    # Inherit socket from this pane's server FIRST: every spelling of the same
+    # server (-L/-S/$TMUX) canonicalizes to one namespace, so a hook fired
+    # from a test server can never write production state.
+    prefix, sid = resolve_socket()
+    pane = pane or payload.get("tmux_pane", "") or detect_pane(prefix)
+    if not pane:
+        return 0
+    try:
+        p = subprocess.run(["tmux", *prefix, "display-message", "-p", "-t", pane,
+                            "#{pane_pid}"],
+                           capture_output=True, text=True, timeout=5)
+        pane_pid = int(p.stdout.strip()) if p.returncode == 0 else 0
+    except (ValueError, Exception):
+        pane_pid = 0
+    apid, astart = 0, 0
+    if pane_pid:
+        table = detect.process_table()
+        ident = detect.agent_identity(pane_pid, table)
+        if ident:
+            _name, apid, astart = ident
+            agent = agent or _name
+    if not apid or not astart or (agent and ident and ident[0] != agent):
+        return 0  # no current matching agent: never bind another pane's status
+    paths = state_paths(prefix)
+    store.append_event(paths, pane, kind, agent=agent, agent_pid=apid,
+                       agent_start=astart, socket_id=sid)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

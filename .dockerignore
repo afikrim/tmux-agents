@@ -1,0 +1,11 @@
+.git
+.impeccable
+HANDOFF.md
+artifacts
+dist
+**/__pycache__
+**/*.pyc
+**/node_modules
+.env
+.env.*
+*.log

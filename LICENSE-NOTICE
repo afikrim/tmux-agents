@@ -1,0 +1,10 @@
+MIT-attribution notice.
+
+This project is original code (stdlib-only Python) but its status design is
+inspired by Corgi (https://github.com/tals/corgi), MIT-licensed
+Copyright (c) Tal Atlas. No Corgi code is vendored; process-tree detection,
+strict screen fallback, and lifecycle-event ideas were reimplemented here.
+If any Corgi snippet is ever copied in, retain its MIT header and list the
+file below.
+
+Reused Corgi code: none.

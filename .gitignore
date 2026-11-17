@@ -1,0 +1,12 @@
+# Local state, machine notes and generated previews never leave this machine.
+/HANDOFF.md
+/artifacts/
+/.impeccable/
+/dist/
+__pycache__/
+*.py[cod]
+node_modules/
+.DS_Store
+.env
+.env.*
+*.log
