@@ -62,8 +62,8 @@ def visible_rows(raw):
     """
     text = ANSI_RE.sub("", raw.decode("utf-8", "replace").rsplit("\x1b[H", 1)[-1])
     real = T("list-panes", "-s", "-t", "pty1", "-F",
-             "#{pane_id}|#{@tmux_agents_sidebar}").stdout.splitlines()
-    targets = iter(line.split("|")[0] for line in real if not line.endswith("|1"))
+             "#{pane_id}|#{@tmux_agents_test_agent}").stdout.splitlines()
+    targets = iter(line.split("|")[0] for line in real if line.endswith("|1"))
     rows = []
     for y, line in enumerate(text.splitlines(), start=1):
         if PANE_RE.match(line):
@@ -81,10 +81,17 @@ class SidebarPTYTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.home = tempfile.mkdtemp(prefix="ta-pty-home-")
+        cls.agent=os.path.join(cls.home,'codex')
+        with open(cls.agent,'w') as f:
+            f.write('#!/bin/sh\necho "› "\nwhile true; do sleep 1; done\n')
+        os.chmod(cls.agent,0o755)
         T("kill-server")
         time.sleep(0.2)
-        T("new-session", "-d", "-s", "pty1", "-x", "200", "-y", "50")
-        T("new-window", "-t", "pty1", "-n", "other")
+        T("new-session", "-d", "-s", "pty1", "-x", "200", "-y", "50",cls.agent)
+        T("new-window", "-t", "pty1", "-n", "other",cls.agent)
+        for pane in T('list-panes','-s','-t','pty1','-F','#{pane_id}').stdout.splitlines():
+            T('set-option','-p','-t',pane,'@tmux_agents_test_agent','1')
+        T('set-option','-p','-t','pty1:1','@tmux_agents_name','other')
         env = dict(os.environ)
         env["TMUX_AGENTS_STATE_DIR"] = os.path.join(cls.home, "state")
         env.pop("TMUX", None)
@@ -129,8 +136,11 @@ class SidebarPTYTest(unittest.TestCase):
     def test_q_returns_focus_keeps_sidebar_alive(self):
         proc, master = self.spawn_sidebar()
         try:
-            drain(master, 2.5)
-            before = visible_pane_rows(drain(master, 1.0))
+            output, deadline = b'', time.monotonic()+4
+            before=[]
+            while time.monotonic()<deadline and not before:
+                output+=drain(master,.3)
+                before=visible_pane_rows(output)
             self.assertTrue(before, "sidebar must render pane rows")
             os.write(master, b"q")
             time.sleep(1.5)
@@ -286,6 +296,7 @@ class SidebarPTYTest(unittest.TestCase):
             self.assertEqual(selected_ref(output),first[0],output.decode('utf-8','replace'))
             T('select-window','-t',second[1])
             T('select-pane','-t',second[0])
+
             os.kill(proc.pid,signal.SIGWINCH)
             self.assertEqual(selected_ref(drain(master,.6)),second[0])
             T('select-pane','-t',observer)
@@ -305,6 +316,34 @@ class SidebarPTYTest(unittest.TestCase):
         finally:
             self.close(proc,master)
             T('select-pane','-t',second[0])
+
+    def test_split_agents_have_separate_click_targets_and_shell_window_is_hidden(self):
+        first=T('list-panes','-t','pty1:0','-F','#{pane_id}|#{@tmux_agents_test_agent}').stdout.splitlines()
+        anchor=next(line.split('|')[0] for line in first if line.endswith('|1'))
+        split=T('split-window','-h','-d','-P','-F','#{pane_id}','-t',anchor,self.agent).stdout.strip()
+        T('set-option','-p','-t',split,'@tmux_agents_test_agent','1')
+        T('set-option','-p','-t',split,'@tmux_agents_name','Split agent')
+        ordinary=T('new-window','-d','-P','-F','#{window_id}','-t','pty1','-n','Plain editor','sleep','60').stdout.strip()
+        env=dict(os.environ,TMUX_AGENTS_STATE_DIR=os.path.join(self.home,'state'))
+        env.pop('TMUX',None); env.pop('TMUX_PANE',None)
+        subprocess.run([sys.executable,BIN,'--socket',SOCK,'daemon','--once'],env=env,
+                       check=True,stdout=subprocess.DEVNULL)
+        proc,master=self.spawn_sidebar()
+        try:
+            raw=drain(master,2)
+            entries=[(y,ref) for y,kind,ref in visible_rows(raw) if kind=='pane']
+            self.assertEqual(len(entries),3)
+            self.assertIn(split,[ref for _,ref in entries])
+            self.assertEqual([entries[i+1][0]-entries[i][0] for i in range(2)],[3,3])
+            self.assertNotIn('Plain editor',ANSI_RE.sub('',raw.decode()))
+            y=next(y for y,ref in entries if ref==split)
+            os.write(master,('\x1b[<0;5;%dM'%y).encode())
+            drain(master,.6)
+            self.assertEqual(T('display-message','-p','-t','pty1','#{pane_id}').stdout.strip(),split)
+        finally:
+            self.close(proc,master)
+            T('kill-pane','-t',split)
+            T('kill-window','-t',ordinary)
 
     def test_activation_plan_cross_session_exact(self):
         # Pure plan: exact argv including origin client, then executed for real

@@ -14,10 +14,22 @@ def sess():
             {"id": "%1", "agent": "codex", "status": "needs-approval", "source": "event", "current": True},
             {"id": "%9", "agent": "", "status": "idle", "source": "process", "current": False}]},
         {"id": "@2", "index": "2", "name": "Terminal", "panes": [
-            {"id": "%2", "agent": "", "status": "idle", "source": "process"}]}]}]
+            {"id": "%2", "agent": "claude", "status": "idle", "source": "process"}]}]}]
 
 
 class RowsTest(unittest.TestCase):
+    def test_agent_splits_are_independent_and_ordinary_windows_are_hidden(self):
+        sessions=sess()
+        sessions[0]['windows'][0]['panes'].append(
+            {'id':'%8','agent':'opencode','status':'running','current':False})
+        sessions[0]['windows'].append({'id':'@3','name':'editor','panes':[
+            {'id':'%10','display_name':'Neovim','status':'idle'}]})
+        agents=[row for row in ui.build_rows(sessions) if row['kind']=='pane']
+        self.assertEqual([row['ref'] for row in agents],['%1','%8','%2'])
+        self.assertEqual([row['win_id'] for row in agents],['@1','@1','@2'])
+        self.assertEqual([row['ref'] for row in agents if row['current']],['%1'])
+        self.assertEqual(ui.activation_tmux_args(agents[1]),['select-pane','-t','%8'])
+
     def test_stable_ids_survive_punctuation(self):
         rows = ui.build_rows(sess())
         kinds = [r["kind"] for r in rows]

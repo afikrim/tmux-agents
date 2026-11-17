@@ -69,17 +69,16 @@ def pane_name(custom, title, agent, cwd="", program=""):
     return "shell"
 
 
-def primary_pane(window):
-    panes = window.get("panes", [])
-    return next((p for p in panes if p.get("agent") and p.get("current")),
-                next((p for p in panes if p.get("agent")),
-                     next((p for p in panes if p.get("current")), next(iter(panes), {}))))
+def agent_panes(session):
+    """Every live agent pane, in tmux window/pane order; ordinary programs omitted."""
+    return [(window,pane) for window in session.get("windows", [])
+            for pane in window.get("panes", []) if pane.get("agent")]
 
 
 def project_summary(session):
-    windows = [w for w in session.get("windows", []) if w.get("panes")]
-    statuses = [primary_pane(w).get("status", "unknown") for w in windows]
-    first = next(((w, p) for w in windows for p in w["panes"] if p.get("unread")), None)
+    agents = agent_panes(session)
+    statuses = [p.get("status", "unknown") for _,p in agents]
+    first = next(((w,p) for w,p in agents if p.get("unread")), None)
     target = None
     if first:
         window, pane = first
@@ -87,12 +86,12 @@ def project_summary(session):
                   "win_id":window["id"], "target":("pane",pane["id"])}
     return {"running":statuses.count("running"),
             "idle":sum(s in ("idle","needs-input","needs-approval","question","done") for s in statuses),
-            "unread":sum(any(p.get("unread") for p in w["panes"]) for w in windows),
+            "unread":sum(bool(p.get("unread")) for _,p in agents),
             "unread_target":target}
 
 
 def build_rows(sessions, project_id=None):
-    """Projects first, then one active-terminal entry per selected project window."""
+    """Projects first, then a separate entry for each selected-project agent pane."""
     project = next((s for s in sessions if s["id"] == project_id),
                    next((s for s in sessions if s.get("attached")), next(iter(sessions), None)))
     rows = [{"kind": "session", "depth": 0, "ref": s["id"], "sess_id": s["id"],
@@ -101,15 +100,8 @@ def build_rows(sessions, project_id=None):
              "target": ("session", s["id"]), **project_summary(s)} for s in sessions]
     rows.append({"kind": "section", "depth": 0, "ref": "section:agents", "label": "Agents",
                  "name": project["name"] if project else "", "target": ("section", "")})
-    for window in project.get("windows", []) if project else []:
-        panes = window.get("panes", [])
-        if not panes:
-            continue
-        pane = primary_pane(window)
-        name = pane.get("display_name") or pane.get("agent") or "shell"
-        if name == "shell" and not pane.get("custom_name"):
-            title = window.get("name", "")
-            name = title if title.lower() not in ("", "sh", "bash", "zsh", "fish", "dash") else "Terminal"
+    for window,pane in agent_panes(project) if project else []:
+        name = pane.get("display_name") or pane["agent"]
         tag, _ = STATUS_STYLE.get(pane.get("status", "unknown"), STATUS_STYLE["unknown"])
         source = SOURCE_MARK.get(pane.get("source", ""), "?")
         rows.append({"kind": "pane", "depth": 1, "ref": pane["id"],
@@ -117,10 +109,10 @@ def build_rows(sessions, project_id=None):
                      "window_name": window.get("name", ""), "window_index": window.get("index", ""),
                      "focus_pane": pane["id"], "target": ("pane", pane["id"]),
                      "name": name, "label": san("%s [%s%s]" % (name, tag, source), 0),
-                     "current": project.get("attached", False) and window.get("active", False),
+                     "current": project.get("attached", False) and pane.get("current", False),
                      "custom_name": pane.get("custom_name", ""), "agent": pane.get("agent", ""),
                      "caption": pane.get("caption") or activity.caption(pane.get("status", "unknown")),
-                     "unread": any(p.get("unread") for p in panes),
+                     "unread": pane.get("unread", False),
                      "status": pane.get("status", "unknown"), "source": pane.get("source", "")})
     return rows
 
@@ -332,7 +324,8 @@ def frame(rows, sessions, cursor, top, width, height, focused=True, scroll_elaps
                 start = max(0, selected - count + 1)
         start = max(0, min(start, max(0, len(indices) - count)))
         offsets[key] = start
-        for index in indices[start:start + count]:
+        visible = indices[start:start + count]
+        for position,index in enumerate(visible):
             hits[len(lines) + 1] = index
             row = rows[index]
             background = ("selected" if index == cursor and focused else "hover" if row["ref"] == hover_ref
@@ -350,14 +343,16 @@ def frame(rows, sessions, cursor, top, width, height, focused=True, scroll_elaps
                     status = row.get("status", "unknown")
                     color = "amber" if status in ("question","needs-input") else "rose" if status=="needs-approval" else "muted"
                     add(styled("     "+row.get("caption", ""),width,color,background))
-            if stride >= 3:
+            if stride >= 3 and (key == "projects" or position < len(visible)-1):
                 add(styled("",width))
     # Keep a compact agents block against the bottom. Its heading/divider
     # count toward the half-height cap; tiny terminals retain one useful row.
     agent_limit = min(max(0, height - 1), max(3, height // 2))
-    agent_stride = 2 if height >= 8 else 1
-    agent_count = min(max(1, len(agents)), max(0, (agent_limit - 2)//agent_stride))
-    agent_height = 2 + agent_count*agent_stride if agent_count else 0
+    agent_stride = 3 if height >= 8 else 1
+    capacity = (agent_limit-1)//3 if agent_stride == 3 else agent_limit-2
+    agent_count = min(len(agents),max(0,capacity))
+    agent_height = (2+agent_count*agent_stride-(1 if agent_stride==3 else 0)
+                    if agent_count else 3 if agent_limit>=3 else 0)
     add(styled(" Projects / %d" % len(projects), width, "accent", bold=True))
     available = max(0,height-agent_height-1)
     project_stride = 3 if available>=3 else 2 if available>=2 else 1
@@ -371,7 +366,7 @@ def frame(rows, sessions, cursor, top, width, height, focused=True, scroll_elaps
         if agents:
             group(agents, agent_count, "agents", agent_stride)
         else:
-            add(styled(" No terminals in this project", width, "muted"))
+            add(styled(" No agents in this project", width, "muted"))
     lines.extend(styled("", width) for _ in range(height - len(lines)))
     result = (lines, offsets, 0, height)
     return result + (hits,) if return_hits else result

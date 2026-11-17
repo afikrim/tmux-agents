@@ -43,14 +43,14 @@ class ActivityTest(unittest.TestCase):
         self.assertFalse(state['unread'])
         self.assertTrue(step(state,"done",generation="pid:2")['unread'])
 
-    def test_project_counts_count_windows_and_unread_targets_hidden_split(self):
+    def test_project_counts_count_agents_and_unread_targets_exact_split(self):
         session={"id":"$1","name":"project","windows":[
             {"id":"@1","panes":[{"id":"%1","agent":"codex","status":"running","current":True},
                                     {"id":"%2","agent":"claude","status":"question","unread":True}]},
-            {"id":"@2","panes":[{"id":"%3","status":"idle","unread":True}]},
-            {"id":"@3","panes":[{"id":"%4","status":"unknown"}]}]}
+            {"id":"@2","panes":[{"id":"%3","agent":"opencode","status":"idle","unread":True}]},
+            {"id":"@3","panes":[{"id":"%4","status":"idle","unread":True}]}]}
         summary=ui.project_summary(session)
-        self.assertEqual((summary['running'],summary['idle'],summary['unread']),(1,1,2))
+        self.assertEqual((summary['running'],summary['idle'],summary['unread']),(1,2,2))
         self.assertEqual(summary['unread_target']['ref'],'%2')
         rows=ui.build_rows([session])
         lines,_,_,_,hits=ui.frame(rows,[session],0,0,32,24,return_hits=True)

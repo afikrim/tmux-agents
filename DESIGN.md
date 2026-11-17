@@ -50,11 +50,12 @@ unless the user explicitly chooses to switch it.
 
 ## Layout
 Fixed-width left rail with project sessions above the selected project's agent
-windows. The agents block is anchored to the bottom and capped at half the sidebar
+panes. The agents block is anchored to the bottom and capped at half the sidebar
 height, including its heading and divider. It shrinks to its contents when
 shorter; projects use the space above. Each section scrolls independently. Each
 project has a title, counts beneath it and one blank row between projects.
-Each agent window has a title and a supporting activity caption, with a stable
+Each live agent pane has a title and supporting activity caption, with one blank
+row between entries and a stable
 real-pane target for activation. Section headings and a
 single divider carry the hierarchy. Shortcut hints live in a searchable popup,
 not permanent footers. Native centered popups inherit the Ink / Mint palette
@@ -77,6 +78,9 @@ Agent entries show conversation/program titles, right-aligned status, and a
 subordinate current-action caption. The current project is accented; keyboard
 selection gets the focused background. Agent titles scroll when focused and
 clipped. A project cursor previews that project's windows before activation.
+Shell/editor panes are excluded. Splits hosting separate agents each get an
+entry; counts use those same agent panes. New project + agent is a compact native
+popup that creates the session and its first agent window in one action.
 Pointer hover uses a subtler background and scrolls clipped titles without
 moving keyboard selection, switching projects, or taking terminal focus.
 Ctrl-b s opens the project picker; ? opens contextual shortcut help. These

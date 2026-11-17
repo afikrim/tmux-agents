@@ -583,7 +583,6 @@ def cmd_sidebar(args):
         decoder = ui.InputDecoder()
         while True:
             previous_ref = rows[cursor]["ref"] if rows and 0 <= cursor < len(rows) else None
-            gained_focus = False
             now = _t.time()
             if now >= next_poll:
                 snapshot = store.read_state(paths)
@@ -596,7 +595,6 @@ def cmd_sidebar(args):
                     rc, out, _ = run_tmux(prefix, "display-message", "-p", "-t", me, "#{&&:#{pane_active},#{window_active}}")
                     if rc == 0 and out.strip() in ("0", "1"):
                         previous_focus, focused = focused, out.strip() == "1"
-                        gained_focus = focused and not previous_focus
                         if previous_focus != focused:
                             hover_ref = None
                     # On query failure keep the last known value: a dead
@@ -608,7 +606,7 @@ def cmd_sidebar(args):
                 project_id = next((session["id"] for session in sessions if session.get("attached")),
                                   next((session["id"] for session in sessions), None))
             rows = ui.build_rows(sessions, project_id)
-            cursor = ui.selection_index(rows, previous_ref if initialized and not gained_focus else None, focused)
+            cursor = ui.selection_index(rows, previous_ref if initialized else None, focused)
             initialized = True
             cursor = max(0, min(cursor, len(rows) - 1)) if rows else 0
             if rows and focused and rows[cursor]["kind"] not in ("session", "pane"):
@@ -897,6 +895,9 @@ def do_menu(prefix, origin_window="", origin_pane=""):
                               "launch", "--window", target, kind])
         cmd = 'run-shell "' + esc_tmux(command) + '"'
         items += [kind[0].upper() + kind[1:], kind[0], cmd]
+    command=shlex.join([sys.executable,script,*cli_socket_flags(prefix),'new-project',
+                        '--window',target,'--client','#{client_name}'])
+    items += ['New project + agent','n','run-shell "'+esc_tmux(command)+'"']
     run_tmux(prefix, "display-menu", "-T", "New agent", "-t", target, *items)
 
 
@@ -963,6 +964,11 @@ def cmd_launch(args, prefix=None):
             break
     if not cwd or cwd == "$HOME":
         cwd = os.path.expanduser("~")
+    if getattr(args,'directory',''):
+        cwd=os.path.abspath(os.path.expanduser(args.directory))
+        if not os.path.isdir(cwd):
+            print('launch failed: Directory does not exist')
+            return 1
     # A dedicated Codex process keeps hook environment tied to this pane,
     # rather than inheriting the first pane of a shared app-server daemon.
     argv = [prog] + (["--no-daemon"] if kind == "codex" and not args.exe else []) + extra
@@ -971,6 +977,30 @@ def cmd_launch(args, prefix=None):
     for item in (args.env or []):
         if "=" in item:
             env_args += ["-e", item]
+    project=getattr(args,'project','')
+    if project:
+        if not project.strip() or re.search(r'[.:\x00-\x1f\x7f]',project) or len(project)>120:
+            print('launch failed: Project name must be 1–120 characters without dots, colons or controls')
+            return 1
+        import shutil
+        resolved=shutil.which(prog)
+        if not resolved:
+            print('launch failed: Agent executable not found: '+prog)
+            return 1
+        argv[0]=os.path.abspath(resolved)
+        rc,out,err=run_tmux(prefix,'new-session','-d','-P','-F','#{session_id}',
+                            '-s',project,'-n',kind,'-c',cwd,*env_args,*argv)
+        if rc:
+            print('launch failed: '+err.strip())
+            return 1
+        client=getattr(args,'client','')
+        if client:
+            rc,_,err=run_tmux(prefix,'switch-client','-c',client,'-t',out.strip())
+            if rc:
+                print('Project created; could not switch client: '+err.strip())
+                return 1
+        ensure_sidebars(prefix,state_paths(prefix))
+        return 0
     rc, _, err = run_tmux(prefix, "new-window", *dest, *env_args, "-n", kind,
                            "-c", cwd, *argv)
     if rc != 0:
@@ -1390,13 +1420,13 @@ def main(argv=None):
     sub.add_parser("sidebar"); sub.add_parser("ensure")
     h = sub.add_parser("hide"); h.add_argument("--all-windows", action="store_true")
     h.add_argument("--window", default="")
-    for name in ("toggle", "focus", "menu", "diff", "sessions", "help"):
+    for name in ("toggle", "focus", "menu", "diff", "sessions", "help", "new-project"):
         p = sub.add_parser(name)
         p.add_argument("--window", default="")
         p.add_argument("--pane", default="")
         if name == "diff":
             p.add_argument("--directory", default="", help="Git checkout to show (default: terminal cwd)")
-        if name in ("sessions", "help"):
+        if name in ("sessions", "help", "new-project"):
             p.add_argument("--client", default="")
     rn = sub.add_parser("rename", help="rename a sidebar conversation, session or window")
     targets = rn.add_mutually_exclusive_group()
@@ -1406,8 +1436,9 @@ def main(argv=None):
     rn.add_argument("--reset", action="store_true", help="restore automatic conversation title")
     rn.add_argument("name", nargs="?")
     popup = sub.add_parser("popup", help=argparse.SUPPRESS)
-    popup.add_argument("--kind", choices=("sessions", "help"), required=True)
+    popup.add_argument("--kind", choices=("sessions", "help", "new-project"), required=True)
     popup.add_argument("--client", required=True)
+    popup.add_argument("--window", default="")
     dv = sub.add_parser("diff-view", help=argparse.SUPPRESS)
     dv.add_argument("--target", required=True)
     sub.add_parser("status"); sub.add_parser("install")
@@ -1421,6 +1452,9 @@ def main(argv=None):
     e.add_argument("--pane", required=True); e.add_argument("--kind", required=True)
     e.add_argument("--agent", default="")
     lz = sub.add_parser("launch")
+    lz.add_argument('--project',default='',help='Create a new project session with this agent as its first window')
+    lz.add_argument('--directory',default='')
+    lz.add_argument('--client',default='')
     lz.add_argument("--window", default="",
                     help="target window id (default: current window)")
     lz.add_argument("--exe", default="",
@@ -1462,9 +1496,16 @@ def main(argv=None):
     elif args.command in ("sessions", "help"):
         from lib.popups import open_popup
         sys.exit(open_popup(P(args), paths_of(args), args.command, args.client))
+    elif args.command == 'new-project':
+        from lib.popups import open_popup
+        sys.exit(open_popup(P(args),paths_of(args),'new-project',args.client,args.window))
     elif args.command == "popup":
-        from lib.popups import run
-        run(P(args), paths_of(args), args.kind, args.client, build_sessions)
+        if args.kind == 'new-project':
+            from lib.project import run
+            run(P(args),args.client,args.window,cmd_launch)
+        else:
+            from lib.popups import run
+            run(P(args), paths_of(args), args.kind, args.client, build_sessions)
     elif args.command == "diff":
         sys.exit(cmd_diff(args) or 0)
     elif args.command == "diff-view":

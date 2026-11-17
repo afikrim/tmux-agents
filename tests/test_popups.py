@@ -20,6 +20,15 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class PopupModelTest(unittest.TestCase):
+    def test_new_project_form_fits_and_keeps_selected_field_visible(self):
+        from lib.project import frame
+        for width,height in ((24,5),(78,12)):
+            for selected in range(4):
+                lines=frame('工具 workspace','/a very long project path/'*4,'codex',selected,width,height)
+                self.assertEqual(len(lines),height)
+                plain=[re.sub(r'\x1b\[[0-9;]*m','',line) for line in lines]
+                self.assertTrue(any(' > ' in line for line in plain))
+                self.assertTrue(all(ui.cell_width(line)==width for line in plain))
     def test_search_sessions_status_help_and_frame_geometry(self):
         sessions = [dict(id='$1', name='工具 backend', windows=[dict(panes=[
             dict(agent='codex', status='needs-approval')])]), dict(id='$2', name='frontend', windows=[])]
@@ -138,15 +147,87 @@ class PopupTTYTest(unittest.TestCase):
                 process.kill()
                 process.communicate()
 
+    def test_new_project_popup_cancel_preserves_every_terminal(self):
+        process=self.popup('new-project','New project + agent')
+        os.write(self.master,b'\x1b')
+        out,err=process.communicate(timeout=3)
+        self.assertEqual(process.returncode,0,out+err)
+        self.assertEqual(self.t('list-panes','-a','-F','#{pane_id} #{pane_pid}').stdout,self.original)
+        self.assertEqual(self.t('display-message','-p','-c',self.name,'#{session_name}').stdout.strip(),'alpha')
+
+    def test_new_project_popup_creates_first_agent_without_shell_placeholder(self):
+        directory=Path(self.temp.name)/'repo path with spaces'
+        directory.mkdir()
+        binaries=Path(self.temp.name)/'bin'
+        binaries.mkdir()
+        for provider in ('codex','claude','opencode'):
+            agent=binaries/provider
+            agent.write_text('#!/bin/sh\necho "› "\nwhile true; do sleep 1; done\n')
+            agent.chmod(0o755)
+        self.env['PATH']=str(binaries)+os.pathsep+self.env['PATH']
+        self.t('set-environment','-g','PATH',self.env['PATH'])
+        process=self.popup('new-project','New project + agent')
+        os.write(self.master,('\x15new project\t\x15'+str(directory)+'\t\x1b[C\r\r').encode())
+        deadline=time.monotonic()+6
+        while time.monotonic()<deadline:
+            self.drain(.1)
+            current=self.t('display-message','-p','-c',self.name,'#{session_name}').stdout.strip()
+            if current=='new project': break
+        self.assertEqual(current,'new project')
+        out,err=process.communicate(timeout=3)
+        self.assertEqual(process.returncode,0,out+err)
+        windows=self.t('list-windows','-t','new project','-F','#{window_name}').stdout.splitlines()
+        self.assertEqual(windows,['claude'])
+        panes=[line.split('|') for line in self.t('list-panes','-t','new project','-F',
+            '#{pane_id}|#{@tmux_agents_sidebar}|#{pane_current_path}').stdout.splitlines()]
+        real=[row for row in panes if row[1]!='1']
+        self.assertEqual(len(real),1)
+        self.assertEqual(Path(real[0][2]).resolve(),directory.resolve())
+        after=self.t('list-panes','-a','-F','#{pane_id} #{pane_pid}').stdout.splitlines()
+        self.assertTrue(all(line in after for line in self.original.splitlines()))
+        before=self.t('list-panes','-a','-F','#{pane_id} #{pane_pid}').stdout
+        duplicate=subprocess.run([sys.executable,str(ROOT/'bin/tmux-agents'),'--socket-path',self.prefix[1],
+             'launch','--project','new project','--directory',str(directory),'codex'],env=self.env,
+             capture_output=True,text=True,timeout=10)
+        self.assertNotEqual(duplicate.returncode,0)
+        self.assertEqual(self.t('list-panes','-a','-F','#{pane_id} #{pane_pid}').stdout,before)
+        relative=subprocess.run([sys.executable,str(ROOT/'bin/tmux-agents'),'--socket-path',self.prefix[1],
+             'launch','--project','relative','--exe','bin/codex','--directory',str(directory),'codex'],
+             cwd=self.temp.name,env=self.env,capture_output=True,text=True,timeout=10)
+        self.assertEqual(relative.returncode,0,relative.stdout+relative.stderr)
+        self.assertEqual(self.t('list-windows','-t','relative','-F','#{window_name}').stdout.strip(),'codex')
+
+    def test_agent_menu_opens_new_project_form(self):
+        window=self.t('display-message','-p','-c',self.name,'#{window_id}').stdout.strip()
+        process=subprocess.Popen([sys.executable,str(ROOT/'bin/tmux-agents'),'--socket-path',self.prefix[1],
+                                  'menu','--window',window],env=self.env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+        output=''; deadline=time.monotonic()+3
+        while 'New agent' not in output and time.monotonic()<deadline: output+=self.drain(.1)
+        self.assertIn('New agent',output)
+        os.write(self.master,b'n')
+        output=''; deadline=time.monotonic()+4
+        while 'Folder:' not in output and time.monotonic()<deadline: output+=self.drain(.1)
+        self.assertIn('Folder:',output)
+        os.write(self.master,b'\x1b')
+        out,err=process.communicate(timeout=3)
+        self.assertEqual(process.returncode,0,out+err)
+        self.drain(.2)
+        self.assertEqual(self.t('list-panes','-a','-F','#{pane_id} #{pane_pid}').stdout,self.original)
+
     def test_mouse_hover_through_tmux_does_not_steal_focus_or_switch_project(self):
         self.t('set-option', '-g', 'mouse', 'on')
         main = self.t('display-message', '-p', '-t', 'alpha', '#{pane_id}').stdout.strip()
-        other = self.t('new-window', '-d', '-P', '-F', '#{pane_id}', '-t', 'alpha', 'sleep', '60').stdout.strip()
+        agent=Path(self.temp.name)/'codex'
+        agent.write_text('#!/bin/sh\nwhile true; do sleep 1; done\n')
+        agent.chmod(0o755)
+        other = self.t('new-window', '-d', '-P', '-F', '#{pane_id}', '-t', 'alpha', str(agent)).stdout.strip()
         title = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ hovering reveals this long title'
         self.t('set-option', '-p', '-t', other, '@tmux_agents_name', title)
         subprocess.run([sys.executable, str(ROOT/'bin/tmux-agents'), '--socket-path',
                         self.prefix[1], 'ensure'], env=self.env, check=True, timeout=20,
                        stdout=subprocess.DEVNULL)
+        subprocess.run([sys.executable,str(ROOT/'bin/tmux-agents'),'--socket-path',self.prefix[1],
+                       'daemon','--once'],env=self.env,check=True,stdout=subprocess.DEVNULL)
         self.drain(.8)
         rows = [line.split('|') for line in self.t('list-panes','-t','alpha', '-F',
                 '#{pane_id}|#{@tmux_agents_sidebar}|#{pane_left}|#{pane_top}').stdout.splitlines()]
@@ -158,6 +239,10 @@ class PopupTTYTest(unittest.TestCase):
                      (int(sidebar[2])+x, int(sidebar[3])+y)).encode())
             self.drain(.25)
         initial = capture()
+        deadline=time.monotonic()+4
+        while 'ABCDE' not in initial and time.monotonic()<deadline:
+            self.drain(.1)
+            initial=capture()
         y = next(i for i,line in enumerate(initial.splitlines(),1) if 'ABCDE' in line)
         before = self.t('list-panes','-a','-F','#{pane_id}|#{pane_pid}').stdout
         motion(y)
@@ -167,7 +252,7 @@ class PopupTTYTest(unittest.TestCase):
         motion(y, 6)  # Same row must not reset the title's scroll timer.
         self.drain(.5)
         self.assertNotEqual(capture().splitlines()[y-1], initial.splitlines()[y-1])
-        self.assertIn('>', capture())  # Active-window indicator remains visible.
+        self.assertNotIn('> ABC',capture())  # Hover never makes the hidden agent active.
         beta_y = next(i for i,line in enumerate(initial.splitlines(),1) if 'beta search' in line)
         motion(beta_y)
         self.assertIn('Agents / alpha', capture())

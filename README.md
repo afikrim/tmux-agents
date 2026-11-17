@@ -1,7 +1,7 @@
 # tmux-agents
 
 An always-visible, Corgi-inspired workspace sidebar inside tmux. It lists
-projects (tmux sessions) above agent windows, with live status for Codex, Claude Code
+projects (tmux sessions) above individual agent panes, with live status for Codex, Claude Code
 and OpenCode. Your agents keep their own interactive terminals. The default
 tmux status bar (session, window list, and clock) is hidden; navigation lives
 in the sidebar and project switcher. Uninstall restores its previous setting.
@@ -17,9 +17,9 @@ in the sidebar and project switcher. Uninstall restores its previous setting.
 | Ctrl-b, a | Open the new-agent menu |
 | Ctrl-b, v | Toggle the right-hand diff pane |
 | d (in sidebar) | Toggle diff for the selected terminal |
-| Click a row / Enter | Switch to the project or agent window |
+| Click a row / Enter | Switch to the project or exact agent pane |
 | Hover a row | Highlight it and scroll its long title, keeping terminal focus |
-| j/k, arrows, mouse wheel | Move through projects and agent windows |
+| j/k, arrows, mouse wheel | Move through projects and individual agents |
 | g/G, Page Up/Down | Navigate a long tree |
 | x (in sidebar) | Start an agent in the selected workspace |
 | r / Shift-r (in sidebar) | Rename selection / its window |
@@ -28,8 +28,8 @@ in the sidebar and project switcher. Uninstall restores its previous setting.
 
 The sidebar has two sections: **Projects** on top and **Agents** below.
 Each project has a title, a counts line, and a blank row separating it from the
-next project. Counts show running windows, idle/waiting windows, and unread
-windows. Unknown status is excluded from running/idle totals. Click the
+next project. Counts show running agents, idle/waiting agents, and unread
+agents. Unknown status is excluded from running/idle totals. Click the
 underlined **unread** count to open the first unread terminal in that project,
 including an unread split within a window. Zero unread does nothing.
 
@@ -47,10 +47,12 @@ unknown status. No prompts, command arguments, tool output, or chat text are
 stored for these captions. Existing OpenCode sessions need a restart to load
 the expanded tool-event bridge; their lifecycle status captions still work.
 
-Moving through projects previews only that project's windows; Enter switches
-to the project. Each window appears once, labelled with its active agent,
-conversation, or foreground program. Normal tmux splits remain accessible
-through tmux's pane controls. The agents section sits against the bottom and
+Moving through projects previews only that project's agents; Enter switches
+to the project. Each pane hosting Codex, Claude, or OpenCode gets its own
+entry, including multiple agents split inside one window. Plain shell/editor
+panes are omitted. Agent entries have a blank row between them; click or Enter
+selects the exact agent pane. Ordinary windows remain accessible through tmux.
+The agents section sits against the bottom and
 is capped at half the sidebar height, including its heading. Longer lists
 scroll within that space; projects use the space above. Both sections scroll
 independently. The selector follows the active window after mouse navigation;
@@ -70,6 +72,19 @@ popup. **Ctrl-b, s** opens the matching project picker: type to search, use
 arrows to select, Enter to switch, and Escape to cancel.
 
 The launcher opens a **new window** in the selected workspace's directory.
+In the new-agent menu (**Ctrl-b a** or **x**), choose **New project + agent**
+with **n** to create a new tmux session and its first agent together. Set the
+project name, folder, and agent in the popup; Tab moves fields, left/right
+chooses the agent, and Enter on **Create project + agent** submits. Escape
+cancels. A tmux session always needs a window, so the first window runs the
+agent directly rather than creating a placeholder shell.
+
+The same action is available from the CLI:
+
+```sh
+tmux-agents launch --project my-project --directory ~/code/my-project codex
+```
+
 When its last real terminal exits, the owned navigation pane is removed so
 tmux closes the empty window. Other running panes and terminals deliberately
 retained with `remain-on-exit` are preserved.
