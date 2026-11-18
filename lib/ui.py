@@ -279,23 +279,25 @@ def click_target(rows, hits, x, y):
 def summary_line(row, width, background):
     """Colour each count and return the exact visible unread click range."""
     count = lambda value: str(value) if value < 100 else "99+"
-    segments = [(count(row.get("running",0))+" run", "accent"),
-                (count(row.get("idle",0))+" idle", "muted"),
-                (count(row.get("unread",0))+" unread", "amber" if row.get("unread") else "muted")]
-    text, used, target = RESET + theme.bg(background) + "  ", 2, None
+    segments = [("▶ "+count(row.get("running",0)), "accent"),
+                ("● "+count(row.get("idle",0)), "muted")]
+    if row.get("unread",0)>0:
+        segments.append((count(row["unread"])+" unread", "amber"))
+    used=min(2,max(0,width))
+    text, target = RESET + theme.bg(background) + " "*used, None
     for i, (label, color) in enumerate(segments):
         if i:
-            space = min(2,max(0,width-used))
-            text += " "*space
-            used += space
+            separator=" · " if i==2 else "  "
+            if i==2 and width-used<=cell_width(separator):
+                continue
+            visible_separator=fit(separator,max(0,width-used),False)
+            text+=visible_separator
+            used+=cell_width(visible_separator)
         visible = fit(label, max(0, width-used), False)
         if i == 2 and visible:
             target = (used+1, used+cell_width(visible))
         text += theme.fg(color) + ("\x1b[4m" if i == 2 and row.get("unread") else "") + visible + "\x1b[24m"
         used += cell_width(visible)
-    # fit the whole plain layout first on very narrow terminals.
-    if width < 8:
-        return styled("  %d unread" % row.get("unread",0),width,"amber",background), (3,width) if width>=3 else None
     return text + " " * max(0,width-used) + RESET + BASE, target
 
 
@@ -345,14 +347,14 @@ def frame(rows, sessions, cursor, top, width, height, focused=True, scroll_elaps
                     add(styled("     "+row.get("caption", ""),width,color,background))
             if stride >= 3 and (key == "projects" or position < len(visible)-1):
                 add(styled("",width))
-    # Keep a compact agents block against the bottom. Its heading/divider
-    # count toward the half-height cap; tiny terminals retain one useful row.
-    agent_limit = min(max(0, height - 1), max(3, height // 2))
+    # Reserve the bottom third, including heading/divider, even for short
+    # or empty lists. Tiny terminals retain one useful agent row.
+    minimum = 4 if height >= 8 else 3
+    agent_limit = min(max(0, height - 1), max(minimum, height // 3))
     agent_stride = 3 if height >= 8 else 1
     capacity = (agent_limit-1)//3 if agent_stride == 3 else agent_limit-2
     agent_count = min(len(agents),max(0,capacity))
-    agent_height = (2+agent_count*agent_stride-(1 if agent_stride==3 else 0)
-                    if agent_count else 3 if agent_limit>=3 else 0)
+    agent_height = agent_limit
     add(styled(" Projects / %d" % len(projects), width, "accent", bold=True))
     available = max(0,height-agent_height-1)
     project_stride = 3 if available>=3 else 2 if available>=2 else 1

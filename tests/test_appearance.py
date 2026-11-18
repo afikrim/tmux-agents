@@ -44,7 +44,7 @@ class AppearanceTest(unittest.TestCase):
     def test_label_controls_cannot_escape_the_frame(self):
         self.assertEqual(ui.fit('a\x1bb\x85c',4), 'abc ')
 
-    def test_agents_are_bottom_anchored_capped_and_scroll_to_selected_window(self):
+    def test_agents_reserve_bottom_third_and_scroll_to_selected_window(self):
         sessions = [{"id":"$1", "name":"work", "attached":True, "windows":[
             {"id":"@%d" % index, "name":"task", "panes":[
                 {"id":"%%%d" % index, "agent":"codex", "status":"running"}]}
@@ -54,15 +54,30 @@ class AppearanceTest(unittest.TestCase):
         lines, offsets, _, _, hits = ui.frame(rows,sessions,last,0,32,20,return_hits=True)
         agent_hits = {y:i for y,i in hits.items() if rows[i]["kind"] == "pane"}
         divider = next(y for y,line in enumerate(lines,1) if '──' in ANSI.sub('',line))
-        self.assertEqual(max(agent_hits), 20)
-        self.assertLessEqual(20 - divider + 1, 10)
-        self.assertEqual(agent_hits[20], last)
+        self.assertEqual(divider, 15)
+        self.assertEqual(sorted(agent_hits), [17,18])
+        self.assertEqual(agent_hits[18], last)
         self.assertGreater(offsets['agents'], 0)
         sessions[0]['windows'] = sessions[0]['windows'][:1]
         rows = ui.build_rows(sessions)
         lines, _, _, _, hits = ui.frame(rows,sessions,2,0,32,20,return_hits=True)
-        self.assertEqual([y for y,i in hits.items() if rows[i]['kind'] == 'pane'], [19,20])
-        self.assertIn('Agents / work', ANSI.sub('',lines[-3]))
+        self.assertEqual([y for y,i in hits.items() if rows[i]['kind'] == 'pane'], [17,18])
+        self.assertIn('Agents / work', ANSI.sub('',lines[15]))
+        one_agent = sessions[0]['windows']
+        for height in (12,20,30,60):
+            for windows in (one_agent, []):
+                sessions[0]['windows'] = windows
+                rows = ui.build_rows(sessions)
+                lines, _, _, _, hits = ui.frame(rows,sessions,0,0,32,height,return_hits=True)
+                divider = height-height//3+1
+                self.assertIn('──', ANSI.sub('',lines[divider-1]))
+                self.assertIn('Agents / work', ANSI.sub('',lines[divider]))
+                self.assertEqual(len(lines), height)
+                if not windows:
+                    self.assertIn('No agents', ANSI.sub('',lines[divider+1]))
+                for y,line in enumerate(lines,1):
+                    if not ANSI.sub('',line).strip():
+                        self.assertNotIn(y, hits)
 
     def test_focused_title_scrolls_with_fixed_status_and_unfocused_stays_still(self):
         row = {'kind': 'pane', 'ref': '%1', 'name': 'ABCDEFGHIJKLMNOQRSTUVWXYZ',

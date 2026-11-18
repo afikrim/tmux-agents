@@ -2,9 +2,10 @@
 
 An always-visible, Corgi-inspired workspace sidebar inside tmux. It lists
 projects (tmux sessions) above individual agent panes, with live status for Codex, Claude Code
-and OpenCode. Your agents keep their own interactive terminals. The default
-tmux status bar (session, window list, and clock) is hidden; navigation lives
-in the sidebar and project switcher. Uninstall restores its previous setting.
+and OpenCode. Your agents keep their own interactive terminals. A compact
+window-tab strip sits above the main content, aligned after the sidebar.
+It includes every window, so shell/editor windows remain easy to reach.
+The session label and clock stay hidden. Uninstall restores the previous bar.
 
 ## Controls
 
@@ -16,6 +17,7 @@ in the sidebar and project switcher. Uninstall restores its previous setting.
 | Ctrl-b, ? | Open the shortcut reference popup |
 | Ctrl-b, a | Open the new-agent menu |
 | Ctrl-b, v | Toggle the right-hand diff pane |
+| Click a top tab / Ctrl-b, n or p | Switch windows, including shells and editors |
 | d (in sidebar) | Toggle diff for the selected terminal |
 | Click a row / Enter | Switch to the project or exact agent pane |
 | Hover a row | Highlight it and scroll its long title, keeping terminal focus |
@@ -28,10 +30,11 @@ in the sidebar and project switcher. Uninstall restores its previous setting.
 
 The sidebar has two sections: **Projects** on top and **Agents** below.
 Each project has a title, a counts line, and a blank row separating it from the
-next project. Counts show running agents, idle/waiting agents, and unread
-agents. Unknown status is excluded from running/idle totals. Click the
+next project. Counts use **▶** for running agents and **●** for idle/waiting
+agents, followed by **· N unread** only when there are unread agents.
+Unknown status is excluded from running/idle totals. Click the
 underlined **unread** count to open the first unread terminal in that project,
-including an unread split within a window. Zero unread does nothing.
+including an unread split within a window. Zero unread is hidden.
 
 Unread means a new completion, question, input request, or approval you have
 not visited. Visiting the real terminal in an attached client marks it read;
@@ -51,10 +54,15 @@ Moving through projects previews only that project's agents; Enter switches
 to the project. Each pane hosting Codex, Claude, or OpenCode gets its own
 entry, including multiple agents split inside one window. Plain shell/editor
 panes are omitted. Agent entries have a blank row between them; click or Enter
-selects the exact agent pane. Ordinary windows remain accessible through tmux.
-The agents section sits against the bottom and
-is capped at half the sidebar height, including its heading. Longer lists
-scroll within that space; projects use the space above. Both sections scroll
+selects the exact agent pane. The top tabs include all windows, including
+ordinary shells/editors. The tab strip leaves blank space above the sidebar
+and optional diff pane, using their actual widths, and follows hiding, resizing,
+and zooming. With the sidebar hidden it starts at the left edge. Long window
+lists scroll around the active tab using tmux's native overflow handling.
+The agents section reserves the bottom third of the sidebar height, including
+its heading and divider, even when there are few or no agents. Tiny terminals
+keep enough room for one agent. Longer lists scroll within that space;
+projects use the space above. Both sections scroll
 independently. The selector follows the active window after mouse navigation;
 keyboard browsing stays independent while the sidebar is focused.
 
@@ -347,7 +355,8 @@ Inspired by [Corgi](https://github.com/tals/corgi). See LICENSE-NOTICE.
 
 Ink / Mint coordinates the sidebar and tmux chrome: grouped workspaces,
 right-aligned status text, focus-aware selection, and a bottom-anchored agents
-list. The default tmux status bar is hidden. Theme values are saved at install
+list. The native status line provides an aligned window-tab strip above the
+main content, with no session label or clock. Theme values are saved at install
 and restored on uninstall. No whole-screen clear is sent on normal updates.
 
 A matching terminal profile ships at `extras/kitty-tmux-agents.conf` (also in

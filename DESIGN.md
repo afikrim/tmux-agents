@@ -50,9 +50,9 @@ unless the user explicitly chooses to switch it.
 
 ## Layout
 Fixed-width left rail with project sessions above the selected project's agent
-panes. The agents block is anchored to the bottom and capped at half the sidebar
-height, including its heading and divider. It shrinks to its contents when
-shorter; projects use the space above. Each section scrolls independently. Each
+panes. The agents block reserves the bottom third of the sidebar height,
+including its heading and divider, even for short or empty lists. Tiny terminals
+retain enough room for one agent; projects use the space above. Each section scrolls independently. Each
 project has a title, counts beneath it and one blank row between projects.
 Each live agent pane has a title and supporting activity caption, with one blank
 row between entries and a stable
@@ -67,12 +67,15 @@ Use solid tonal surfaces. The active window and focused row have distinct
 backgrounds. Render complete frames without clearing the screen between polls.
 
 ## Shapes
-Square terminal geometry. The default tmux status bar is hidden; the sidebar
-and project switcher provide navigation without a separate session/window/clock row.
+Square terminal geometry. A native window-tab strip sits above main content,
+with blank space above the sidebar and optional diff pane. Insets follow actual
+panel widths and disappear when hidden or zoomed. No session label or clock.
+Active tabs use the selected surface and mint text; other tabs use muted ink.
 Navigation uses text. The user-requested sleeping kaomoji `(－ω－) zzZ` identifies idle captions.
 
 ## Components
-Project names identify sessions; their run/idle/unread counts are grouped below.
+Project names identify sessions; counts below use ▶ running and ● idle,
+then a middle-dot separator and unread count only when nonzero.
 Unread counts are underlined when actionable and open the first unread terminal.
 Agent entries show conversation/program titles, right-aligned status, and a
 subordinate current-action caption. The current project is accented; keyboard

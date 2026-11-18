@@ -37,7 +37,9 @@ SHORTCUTS = [
     ('r', 'Diff / Refresh now'),
     ('q or Escape', 'Diff / Close the diff pane'),
     ('= / # / ~ / ?', 'Status source / Native, screen, observed, unknown'),
+    ('▶ / ●', 'Project counts / Running, idle or waiting; unread opens the agent'),
     ('Prefix c', 'tmux / Create a normal terminal window'),
+    ('Click tab / Prefix n,p', 'tmux / Switch windows including shells and editors'),
     ('Prefix o / z', 'tmux / Next pane or toggle pane zoom'),
     ('Prefix d', 'tmux / Detach the client'),
 ]

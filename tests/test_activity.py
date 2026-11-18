@@ -1,4 +1,5 @@
 import tempfile
+import re
 import unittest
 from pathlib import Path
 
@@ -6,6 +7,26 @@ from lib import activity, store, ui
 
 
 class ActivityTest(unittest.TestCase):
+    def test_summary_icons_hide_zero_unread_and_preserve_click_cells(self):
+        row={'running':2,'idle':3,'unread':0}
+        plain=lambda text:re.sub(r'\x1b\[[0-9;]*m','',text)
+        line,span=ui.summary_line(row,32,'bg')
+        self.assertEqual(plain(line).rstrip(),'  ▶ 2  ● 3')
+        self.assertIsNone(span)
+        row['unread']=4
+        line,span=ui.summary_line(row,32,'bg')
+        text=plain(line)
+        self.assertEqual(text.rstrip(),'  ▶ 2  ● 3 · 4 unread')
+        self.assertEqual(text[span[0]-1:span[1]],'4 unread')
+        for unread in (0,1,105):
+            row['unread']=unread
+            for width in range(1,41):
+                text=plain(ui.summary_line(row,width,'bg')[0])
+                self.assertEqual(ui.cell_width(text),width)
+                if unread==0:
+                    self.assertNotIn('unread',text)
+                    self.assertNotIn('·',text)
+
     def test_captions_are_safe_metadata_and_attention_overrides_action(self):
         for tool, expected in (("Bash","Running command"), ("Read","Reading files"),
                                ("apply_patch","Editing files"), ("Grep","Searching code"),
