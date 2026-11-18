@@ -123,6 +123,65 @@ class WindowTabsTest(unittest.TestCase):
         self.t('kill-pane','-t',diff)
         self.assertEqual(self.padding('right'),0)
 
+    def test_dynamic_title_renders_literal_metadata_in_native_tab(self):
+        import runpy
+        module=runpy.run_path(str(ROOT/'bin/tmux-agents'))
+        pane=self.t('display-message','-p','-c',self.name,'#{pane_id}').stdout.strip()
+        self.t('select-pane','-t',pane,'-T','Hi #[fg=red] ##{x}')
+        module['update_window_tabs'](self.prefix,module['list_all'](self.prefix),
+                                    {'panes':{pane:{'agent':'codex'}}})
+        self.output=''
+        self.t('refresh-client','-S','-t',self.name)
+        self.drain(.4)
+        self.assertIn('Hi #[fg=red] #{x}',self.output)
+        self.assertNotIn('##[fg=red]',self.output)
+
+    def test_focused_tab_scrolls_and_inactive_tab_stays_still(self):
+        import runpy
+        module=runpy.run_path(str(ROOT/'bin/tmux-agents'))
+        panes=module['list_all'](self.prefix)
+        real=[p for p in panes if not p.get('sidebar')]
+        for p in real:
+            self.t('select-pane','-t',p['pane_id'],'-T','ABCDEFGHIJKLMNOPQRSTUVWXYZ longer title')
+        panes=module['list_all'](self.prefix)
+        state={'panes':{p['pane_id']:{'agent':'codex'} for p in real}}
+        animation={}
+        module['update_window_tabs'](self.prefix,panes,state,animation)
+        before={wid:self.t('show-window-options','-t',wid,'-v','@tmux_agents_tab_label').stdout for wid in animation}
+        for entry in animation.values():
+            entry['since']-=3
+        module['animate_window_tabs'](self.prefix,animation)
+        for wid,entry in animation.items():
+            after=self.t('show-window-options','-t',wid,'-v','@tmux_agents_tab_label').stdout
+            self.assertEqual(len(after.rstrip('\n')),24)
+            if entry['focused']:
+                self.assertNotEqual(before[wid],after)
+            else:
+                self.assertEqual(before[wid],after)
+        self.assertEqual(self.current(),'0')
+        self.t('refresh-client','-S','-t',self.name)
+        self.drain(.2)
+        self.click(33+24+1+3)
+        self.assertEqual(self.current(),'1')
+
+    def test_live_daemon_animates_focused_directory_tab(self):
+        folder=Path(self.temp.name)/'abcdefghijklmnopqrstuvwxyz-long-project-directory'
+        folder.mkdir()
+        wid=self.t('new-window','-t','tabs','-c',str(folder),'-P','-F','#{window_id}','/bin/sh').stdout.strip()
+        command=[sys.executable,str(ROOT/'bin/tmux-agents'),'--socket-path',self.prefix[1]]
+        try:
+            subprocess.run(command+['daemon-start'],env=self.env,check=True,timeout=10,stdout=subprocess.DEVNULL)
+            labels=set(); deadline=time.monotonic()+6
+            while time.monotonic()<deadline and len(labels)<2:
+                label=self.t('show-window-options','-t',wid,'-v','@tmux_agents_tab_label').stdout.rstrip('\n')
+                if label:
+                    self.assertEqual(len(label),24)
+                    labels.add(label)
+                self.drain(.15)
+            self.assertGreaterEqual(len(labels),2)
+        finally:
+            subprocess.run(command+['daemon-stop'],env=self.env,timeout=10,stdout=subprocess.DEVNULL)
+
     def test_overflow_keeps_current_window_visible_and_shortcuts_work(self):
         for index in range(14):
             self.t('new-window','-d','-t','tabs','-n','long-window-%02d'%index,'sleep','30')

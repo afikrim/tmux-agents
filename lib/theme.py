@@ -40,7 +40,7 @@ TMUX_OPTIONS = [
     (False, "status-right-length", "1000"),
     (False, "status-left", tab_padding("@tmux_agents_sidebar")),
     (False, "status-right", tab_padding("@tmux_agents_diff")),
-    (True, "window-status-format", "#[fg=#96a6bd,bg=#11151f,nobold] #I #W #[default]"),
-    (True, "window-status-current-format", "#[fg=#9ce0c0,bg=#283b4a,bold] #I #W #[default]"),
+    (True, "window-status-format", "#[fg=#96a6bd,bg=#11151f,nobold]#{?@tmux_agents_tab_label,#{@tmux_agents_tab_label}, #I #W }#[default]"),
+    (True, "window-status-current-format", "#[fg=#9ce0c0,bg=#283b4a,bold]#{?@tmux_agents_tab_label,#{@tmux_agents_tab_label}, #I #W }#[default]"),
     (True, "window-status-separator", " "),
 ]

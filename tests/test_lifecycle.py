@@ -43,6 +43,7 @@ class Iso(unittest.TestCase):
 
     def env(self):
         e = dict(os.environ)
+        e["HOME"] = self.home
         e["TMUX_AGENTS_STATE_DIR"] = os.path.join(self.home, "state")
         e.pop("TMUX", None)
         e.pop("TMUX_PANE", None)
@@ -57,29 +58,24 @@ class Iso(unittest.TestCase):
         return T(self.SOCK, "list-panes", "-a", "-F", "#{pane_id}").stdout.split()
 
     def test_01_state_isolated_from_production(self):
+        # Model the default state location inside our temporary HOME. A real
+        # user's daemon may legitimately update their state during this test.
+        prod = os.path.join(self.home, ".local", "state", "tmux-agents", "sentinel")
+        os.makedirs(prod)
+        sentinel = os.path.join(prod, "state.json")
+        with open(sentinel, "w") as f:
+            f.write('{"sentinel":true}')
+        before = os.stat(sentinel).st_mtime_ns
         self.cli("daemon", "--once")
         subs = os.listdir(os.path.join(self.home, "state"))
         self.assertEqual(len(subs), 1, subs)
         stfile = os.path.join(self.home, "state", subs[0], "state.json")
         self.assertTrue(os.path.exists(stfile), subs)
-        prod = os.path.expanduser("~/.local/state/tmux-agents")
-        before = None
-        for _root, _dirs, files in os.walk(prod):
-            for fn in files:
-                if fn == "state.json":
-                    p = os.path.join(_root, fn)
-                    if before is None or os.path.getmtime(p) > before:
-                        before = os.path.getmtime(p)
         self.cli("daemon", "--once")
-        after = None
-        for _root, _dirs, files in os.walk(prod):
-            for fn in files:
-                if fn == "state.json":
-                    p = os.path.join(_root, fn)
-                    if after is None or os.path.getmtime(p) > after:
-                        after = os.path.getmtime(p)
-        if before is not None:
-            self.assertEqual(before, after)
+        self.assertEqual(before, os.stat(sentinel).st_mtime_ns)
+        with open(sentinel) as f:
+            self.assertEqual(f.read(), '{"sentinel":true}')
+        self.assertEqual(os.listdir(os.path.dirname(prod)), ["sentinel"])
         self.assertNotIn("default", os.listdir(os.path.join(self.home, "state")))
 
     def test_02_ensure_no_dup_no_steal(self):

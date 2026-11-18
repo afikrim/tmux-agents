@@ -101,6 +101,7 @@ class InstallTest(unittest.TestCase):
         # Sidebar present exactly once; sentinel hook intact.
         panes = T("list-panes", "-a", "-F", "#{pane_id}").stdout.split()
         self.assertEqual(len(panes), 2, panes)
+        self.assertTrue(T("show-window-options", "-v", "@tmux_agents_tab_title").stdout.strip())
         hooks = T("show-hooks", "-g").stdout
         self.assertIn("after-new-window[5]", hooks)
         self.assertIn("tmux-agents", hooks)
@@ -164,6 +165,8 @@ class InstallTest(unittest.TestCase):
         time.sleep(3.5)  # past the poll interval: nothing may recreate
         panes = T("list-panes", "-a", "-F", "#{pane_id}").stdout.split()
         self.assertEqual(panes, ["%0"], panes)
+        for option in ("@tmux_agents_tab_title", "@tmux_agents_tab_pane", "@tmux_agents_tab_label"):
+            self.assertNotEqual(T("show-window-options", "-v", option).returncode, 0)
         self.assertFalse(private.exists())
         hooks = T("show-hooks", "-g").stdout
         self.assertNotIn("tmux-agents", hooks)

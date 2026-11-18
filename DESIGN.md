@@ -71,6 +71,11 @@ Square terminal geometry. A native window-tab strip sits above main content,
 with blank space above the sidebar and optional diff pane. Insets follow actual
 panel widths and disappear when hidden or zoomed. No session label or clock.
 Active tabs use the selected surface and mint text; other tabs use muted ink.
+Tab labels follow the focused terminal: agent conversation title, program name,
+or shell directory. Side-panel focus keeps the last terminal label; underlying
+window names remain unchanged.
+Tabs have a fixed 24-cell width; only the focused tab's long title scrolls,
+pausing at both ends. Side-panel focus preserves the selected terminal title.
 Navigation uses text. The user-requested sleeping kaomoji `(－ω－) zzZ` identifies idle captions.
 
 ## Components

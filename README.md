@@ -59,6 +59,12 @@ ordinary shells/editors. The tab strip leaves blank space above the sidebar
 and optional diff pane, using their actual widths, and follows hiding, resizing,
 and zooming. With the sidebar hidden it starts at the left edge. Long window
 lists scroll around the active tab using tmux's native overflow handling.
+Tab labels follow each window's focused terminal: the conversation title for
+agents (or its nickname), the program name for apps, and the current directory
+name for shells. Focusing the sidebar or diff keeps the last terminal's label.
+Labels update with the status poll; the underlying tmux window name is preserved.
+Tabs occupy 24 columns each. Long titles scroll in the focused tab with a pause
+at each end; other tabs remain still. Focusing a side panel keeps the same title.
 The agents section reserves the bottom third of the sidebar height, including
 its heading and divider, even when there are few or no agents. Tiny terminals
 keep enough room for one agent. Longer lists scroll within that space;

@@ -16,6 +16,60 @@ loader.exec_module(ta)
 
 
 class NamesTest(unittest.TestCase):
+    def test_tab_label_has_stable_cell_width(self):
+        for index in (0,9,10,100):
+            for title in ('short', 'A very long conversation title that keeps going', '工具開発資料é'*10):
+                text=ui.tab_label(title,index)
+                self.assertEqual(ui.cell_width(text),24)
+                self.assertTrue(text.startswith(' '+str(index)+' '))
+                self.assertEqual(text,ui.tab_label(title,index))
+        title='A very long conversation title that keeps going'
+        self.assertNotEqual(ui.tab_label(title,0,0),ui.tab_label(title,0,3))
+
+    def test_tab_titles_follow_agent_program_and_directory(self):
+        pane = {"title":"⠹ Fix login | app", "path":"/work/app", "program":"node"}
+        for agent in ("codex", "claude", "opencode"):
+            self.assertEqual(ui.tab_title(pane, agent), "Fix login")
+        pane.update(program="nvim", custom_name="Old agent nickname")
+        self.assertEqual(ui.tab_title(pane), "Neovim")
+        pane["program"] = "-fish"
+        self.assertEqual(ui.tab_title(pane), "app")
+        pane["path"] = "/"
+        self.assertEqual(ui.tab_title(pane), "/")
+
+    def test_dynamic_tabs_keep_last_terminal_through_sidebar_focus(self):
+        with tempfile.TemporaryDirectory(prefix='ta-tab-names-') as tmp:
+            prefix = ['-S', str(Path(tmp) / 'socket')]
+            def tmux(*args):
+                rc,out,error=ta.run_tmux(prefix,*args)
+                self.assertEqual(rc,0,error)
+                return out.strip()
+            try:
+                tmux('-f','/dev/null','new-session','-d','-s','names','-n','original','sleep','30')
+                first=tmux('display-message','-p','#{pane_id}')
+                second=tmux('split-window','-d','-P','-F','#{pane_id}','sleep','30')
+                sidebar=tmux('split-window','-d','-P','-F','#{pane_id}','sleep','30')
+                tmux('set-option','-p','-t',sidebar,'@tmux_agents_sidebar','1')
+                tmux('select-pane','-t',first,'-T','Fix login')
+                state={'panes':{first:{'agent':'codex'},second:{'agent':''}}}
+                def update():
+                    ta.update_window_tabs(prefix,ta.list_all(prefix),state)
+                    return tmux('show-window-options','-v','@tmux_agents_tab_title')
+                self.assertEqual(update(),'Fix login')
+                tmux('select-pane','-t',sidebar)
+                self.assertEqual(update(),'Fix login')
+                tmux('select-pane','-t',second)
+                self.assertEqual(update(),'sleep')
+                tmux('select-pane','-t',sidebar)
+                self.assertEqual(update(),'sleep')
+                tmux('kill-pane','-t',second)
+                self.assertEqual(update(),'Fix login')
+                tmux('select-pane','-t',first,'-T','New title #[fg=red] ##{pane_id}')
+                self.assertEqual(update(),'New title ##[fg=red] ##{pane_id}')
+                self.assertEqual(tmux('display-message','-p','#{window_name}'),'original')
+            finally:
+                ta.run_tmux(prefix,'kill-server')
+
     def test_live_title_and_custom_precedence(self):
         self.assertEqual(ui.pane_name('', '⠹ Fix login | app', 'codex', '/work/app'), 'Fix login')
         self.assertEqual(ui.pane_name('My task', 'Generated title', 'claude'), 'My task')
@@ -45,12 +99,17 @@ class NamesTest(unittest.TestCase):
                 paths = {'state': str(Path(tmp) / 'state.json')}
                 def name():
                     return ta.build_sessions(prefix, paths)[0]['windows'][0]['panes'][0]['display_name']
+                def tab():
+                    panes=ta.list_all(prefix)
+                    ta.update_window_tabs(prefix,panes,{'panes':{p['pane_id']:{'agent':''} for p in panes}})
+                    return tmux('show-window-options','-v','@tmux_agents_tab_title')[1].strip()
                 self.assertEqual(name(), 'shell')
                 tmux('send-keys', '-t', pane, 'sleep 30', 'Enter')
                 deadline = time.monotonic() + 3
                 while time.monotonic() < deadline and name() != 'sleep':
                     time.sleep(.1)
                 self.assertEqual(name(), 'sleep')
+                self.assertEqual(tab(), 'sleep')
                 # Verify an actual Neovim process too when it is installed.
                 import shutil
                 nvim = shutil.which('nvim')
@@ -61,6 +120,7 @@ class NamesTest(unittest.TestCase):
                     while time.monotonic() < deadline and name() != 'Neovim':
                         time.sleep(.1)
                     self.assertEqual(name(), 'Neovim')
+                    self.assertEqual(tab(), 'Neovim')
                     tmux('send-keys', '-t', pane, 'Escape', ':qa!', 'Enter')
                 else:
                     tmux('send-keys', '-t', pane, 'C-c')
@@ -68,6 +128,11 @@ class NamesTest(unittest.TestCase):
                 while time.monotonic() < deadline and name() != 'shell':
                     time.sleep(.1)
                 self.assertEqual(name(), 'shell')
+                tmux('send-keys','-t',pane,'cd '+shlex.quote(tmp),'Enter')
+                deadline=time.monotonic()+3
+                while time.monotonic()<deadline and tab()!=Path(tmp).name:
+                    time.sleep(.1)
+                self.assertEqual(tab(),Path(tmp).name)
             finally:
                 tmux('kill-server')
 

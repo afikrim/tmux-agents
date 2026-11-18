@@ -69,6 +69,26 @@ def pane_name(custom, title, agent, cwd="", program=""):
     return "shell"
 
 
+def tab_title(pane, agent=""):
+    """Focused terminal label; shell titles are often stale OSC metadata."""
+    if agent:
+        return pane_name(pane.get("custom_name", ""), pane.get("title", ""),
+                         agent, pane.get("path", ""))
+    name = pane_name("", "", "", program=pane.get("program", ""))
+    if name != "shell":
+        return name
+    path = san(pane.get("path", ""), 0).strip()
+    return (os.path.basename(path.rstrip("/")) or path or "shell")[:120]
+
+
+def tab_label(title, index, elapsed=None, width=24):
+    """Stable tab geometry, reserving space for its index and outer padding."""
+    prefix = " " + str(index) + " "
+    budget = max(0, width-cell_width(prefix)-1)
+    text = fit(title, budget) if elapsed is None else scroll_text(title, budget, elapsed)
+    return fit(prefix + text + " ", width)
+
+
 def agent_panes(session):
     """Every live agent pane, in tmux window/pane order; ordinary programs omitted."""
     return [(window,pane) for window in session.get("windows", [])

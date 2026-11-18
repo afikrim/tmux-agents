@@ -123,7 +123,61 @@ def daemon_alive(paths):
     return 0
 
 
-def daemon_once(prefix, paths):
+def animate_window_tabs(prefix, animation):
+    for wid, entry in animation.items():
+        elapsed = time.monotonic()-entry["since"] if entry["focused"] else None
+        label = ui.tab_label(entry["title"], entry["index"], elapsed).replace("#", "##")
+        if entry.get("label") != label:
+            run_tmux(prefix, "set-window-option", "-t", wid, "@tmux_agents_tab_label", label)
+            entry["label"] = label
+
+
+def update_window_tabs(prefix, panes, state, animation=None):
+    """Publish display labels without renaming windows or infrastructure panes."""
+    focused_windows = set(tmux_lines(prefix, "list-clients", "-F", "#{window_id}")) if animation is not None else set()
+    current = {}
+    for line in tmux_lines(prefix, "list-windows", "-a", "-F",
+                           "#{window_id}\t#{@tmux_agents_tab_pane}\t#{@tmux_agents_tab_title}\t#{@tmux_agents_tab_label}"):
+        parts = line.split("\t", 3)
+        if len(parts) == 4:
+            current[parts[0]] = parts[1:]
+    windows = {}
+    for pane in panes:
+        if not pane.get("sidebar") and not pane.get("diff") and pane["pane_id"] in state["panes"]:
+            windows.setdefault(pane["window_id"], []).append(pane)
+    for wid, terminals in windows.items():
+        old_pane, old_title, old_label = current.get(wid, ("", "", ""))
+        pane = next((p for p in terminals if p["active"]), None)
+        if pane is None:
+            pane = next((p for p in terminals if p["pane_id"] == old_pane), terminals[0])
+        title = ui.tab_title(pane, state["panes"][pane["pane_id"]].get("agent", ""))
+        entry = None
+        if animation is not None:
+            focused = wid in focused_windows
+            key = (pane["pane_id"], title, pane["window_index"], focused)
+            entry = animation.get(wid, {})
+            if entry.get("key") != key:
+                entry = {"key":key, "since":time.monotonic(), "title":title,
+                         "index":pane["window_index"], "focused":focused}
+                animation[wid] = entry
+        elapsed = time.monotonic()-entry["since"] if entry and entry["focused"] else None
+        label = ui.tab_label(title, pane["window_index"], elapsed).replace("#", "##")
+        # Status styles parse #[] after format expansion; escape literal hashes.
+        title = title.replace("#", "##")
+        if old_pane != pane["pane_id"]:
+            run_tmux(prefix, "set-window-option", "-t", wid, "@tmux_agents_tab_pane", pane["pane_id"])
+        if old_title != title:
+            run_tmux(prefix, "set-window-option", "-t", wid, "@tmux_agents_tab_title", title)
+        if old_label != label:
+            run_tmux(prefix, "set-window-option", "-t", wid, "@tmux_agents_tab_label", label)
+        if entry is not None:
+            entry["label"] = label
+    if animation is not None:
+        for wid in set(animation)-set(windows):
+            del animation[wid]
+
+
+def daemon_once(prefix, paths, tab_animation=None):
     sid = socket_id_of(prefix)
     prev = store.read_state(paths)
     panes = list_all(prefix)
@@ -205,6 +259,7 @@ def daemon_once(prefix, paths):
             "status": s, "source": src, "pid": pid,
             "active": p["active"], "updated": time.time(),
             "caption": activity.caption(s, action, src), **notices}
+    update_window_tabs(prefix, panes, state, tab_animation)
     # Drop state for vanished panes (stale clears on exit/replacement).
     store.atomic_write(paths["state"], state)
     return state
@@ -225,7 +280,12 @@ def daemon_loop(prefix, paths):
             f.write("%d %s\n" % (os.getpid(), paths["sid"]))
         server_pid = run_tmux(prefix, "display-message", "-p", "#{pid}")[1].strip()
         startup_deadline = time.monotonic() + 5
+        next_poll, tab_animation = 0.0, {}
         while not os.path.exists(os.path.join(paths["dir"], "disabled")):
+            if time.monotonic() < next_poll:
+                animate_window_tabs(prefix, tab_animation)
+                time.sleep(.2)
+                continue
             if run_tmux(prefix, "display-message", "-p", "#{pid}")[1].strip() != server_pid:
                 break
             if not list_all(prefix):
@@ -234,13 +294,14 @@ def daemon_loop(prefix, paths):
                     continue
                 break
             try:
-                daemon_once(prefix, paths)
+                daemon_once(prefix, paths, tab_animation)
                 ensure_sidebars(prefix, paths)
             except Exception as exc:
                 # Retain a bounded diagnostic without storing terminal content.
                 store.atomic_write(os.path.join(paths["dir"], "error.json"),
                                    {"type": type(exc).__name__, "time": time.time()})
-            time.sleep(POLL_INTERVAL)
+            next_poll = time.monotonic() + POLL_INTERVAL
+            time.sleep(.2)
     finally:
         os.close(lock)
 
@@ -1360,7 +1421,8 @@ def cmd_uninstall(args):
         rc, value, _ = run_tmux(prefix, "show-window-options", "-v", "-t", wid, "@tmux_agents_saved_rename")
         if rc == 0:
             run_tmux(prefix, "set-window-option", "-t", wid, "automatic-rename", value.strip())
-        for option in ("@tmux_agents_saved_rename", "@tmux_agents_hidden", "@tmux_agents_diff_wrap"):
+        for option in ("@tmux_agents_saved_rename", "@tmux_agents_hidden", "@tmux_agents_diff_wrap",
+                       "@tmux_agents_tab_pane", "@tmux_agents_tab_title", "@tmux_agents_tab_label"):
             run_tmux(prefix, "set-window-option", "-u", "-t", wid, option)
     # 4. Remove our keys; restore exactly what was there before install.
     saved = meta.get("saved_keys", {}) or {}
