@@ -145,13 +145,22 @@ is local metadata, not a backup or a way to transfer provider chats to another
 machine. The CLI equivalents are `tmux-agents history --list` and
 `tmux-agents resume RECORD_ID` (the opaque record ID comes from the list).
 
-Each agent entry has an activity caption below its title. Native hooks supply
-bounded labels such as **Reading files**, **Editing files**, **Running command**,
-or **Thinking**; **Need input** and **Need approval** take priority. Idle terminals
-show `(－ω－) zzZ`. Missing tool metadata falls back to **Working** or an honest
-unknown status. No prompts, command arguments, tool output, or chat text are
-stored for these captions. Existing OpenCode sessions need a restart to load
-the expanded tool-event bridge; their lifecycle status captions still work.
+Each agent entry has an activity caption below its title. Native file tools
+show their target, such as **Editing app.py**, **Reading README.md** or
+**Searching src**. After a file tool completes, **Working on app.py** identifies
+the last target while the agent continues thinking, when the harness provides
+that metadata. A new tool/turn or an idle/attention event replaces it.
+**Need input** and **Need approval** always take priority; idle agents show
+`(－ω－) zzZ`. Missing targets retain generic action captions such as
+**Editing files**, **Running command** or **Thinking**.
+
+Only filename/search-scope basenames (at most 256 UTF-8 bytes) are retained for
+these details. Full paths, file contents, patch bodies, search queries, raw
+commands, tool output and chat text are not stored in caption metadata or
+desktop alerts. Expired or replaced agent events cannot supply a filename.
+Claude/Codex hooks pick up the change on their next event. Existing OpenCode
+sessions need a restart to load the updated tool bridge; their current generic
+captions continue working. Running agents are never restarted automatically.
 
 Moving through projects previews only that project's agents; Enter or clicking
 switches to the project and focuses its main terminal, even if its sidebar was

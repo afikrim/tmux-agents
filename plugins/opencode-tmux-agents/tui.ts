@@ -16,7 +16,7 @@ import { installBridge } from "./bridge.mjs";
 // Resolve at runtime so moving the installation never retains another machine's path.
 const HOOK_SCRIPT = fileURLToPath(new URL("../../hooks/agent-event", import.meta.url));
 
-function report(hookEvent: string, sessionID: string, toolName = ""): void {
+function report(hookEvent: string, sessionID: string, toolName = "", target = ""): void {
   try {
     const pane = (globalThis as any)?.process?.env?.TMUX_PANE ?? "";
     if (!pane) return;
@@ -27,7 +27,8 @@ function report(hookEvent: string, sessionID: string, toolName = ""): void {
     child.stdin.on("error", () => {});
     child.stdin.write(
       JSON.stringify({ hook_event_name: hookEvent, session_id: sessionID, tmux_pane: pane,
-                       ...(toolName ? {tool_name: toolName} : {}) }),
+                       ...(toolName ? {tool_name: toolName} : {}),
+                       ...(target ? {tool_target: target} : {}) }),
     );
     child.stdin.end();
   } catch {

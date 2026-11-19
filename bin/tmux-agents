@@ -316,6 +316,7 @@ def daemon_once(prefix, paths, tab_animation=None, allow_notify=True):
         token = ev.get("t", "") if ev and (src == "event" or completed) else ""
         notices = activity.notice(previous, s, generation, token, pane_id in viewed, completed)
         action = ev.get("action", "") if bound_ok and st.event_usable(evinfo,time.time()) and ev else ""
+        target = ev.get('target','') if action and ev else ''
         state["panes"][pane_id] = {
             "session": p["session"], "session_id": p["session_id"],
             "window": p["window_index"], "window_id": p["window_id"],
@@ -323,7 +324,7 @@ def daemon_once(prefix, paths, tab_animation=None, allow_notify=True):
             "status": s, "source": src, "pid": pid,
             "reason": st.unknown_reason(evinfo,bound_ok) if s=='unknown' else '',
             "active": p["active"], "updated": time.time(),
-            "caption": activity.caption(s, action, src), **notices}
+            "caption": activity.caption(s, action, src,target), **notices}
         if (_notify is not None and notices.get("unread") and notices.get("notice_key")):
             try:
                 ev_origin = ev.get("origin", "") if ev else ""

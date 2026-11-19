@@ -55,7 +55,10 @@ including its heading and divider, even for short or empty lists. Tiny terminals
 retain enough room for one agent; projects use the space above. Each section scrolls independently. Each
 project has a title, counts beneath it and one blank row between projects.
 Each live agent pane has a title and supporting activity caption, with one blank
-row between entries and a stable
+row between entries. Native tool targets read like Editing app.py or Reading
+README.md; thinking after a file tool can read Working on app.py. Details use
+bounded basenames only, with generic action fallback and explicit attention
+states taking priority. Each entry keeps a stable
 real-pane target for activation. Section headings and a
 single divider carry the hierarchy. Shortcut hints live in a searchable popup,
 not permanent footers. Native centered popups inherit the Ink / Mint palette

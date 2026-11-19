@@ -1,3 +1,29 @@
+// Extract a filename locally. Raw tool inputs never leave this process.
+export function toolTarget(tool, input) {
+  if (!/read|edit|write|patch|replace|create_file|search|grep|glob|find|list_dir/i.test(tool)) return "";
+  const basename = value => {
+    if (typeof value !== "string" || value.length > 4096 || value.includes("://") || /\p{C}/u.test(value)) return "";
+    const name = value.replaceAll("\\", "/").replace(/\/+$/, "").split("/").at(-1).trim();
+    return !name || name === "." || name === ".." || Buffer.byteLength(name, "utf8") > 256 ? "" : name;
+  };
+  let patch = typeof input === "string" ? input : "";
+  if (typeof input === "string") {
+    try { input = JSON.parse(input); } catch { input = null; }
+  }
+  if (input && typeof input === "object" && !Array.isArray(input)) {
+    for (const field of ["file_path", "filePath", "path", "filename", "file_name", "notebook_path"]) {
+      const name = basename(input[field]);
+      if (name) return name;
+    }
+    patch = input.patch ?? input.input ?? patch;
+  }
+  if (/apply_patch/i.test(tool) && typeof patch === "string") {
+    const match = patch.slice(0, 65536).match(/^\*\*\* (?:Update|Add|Delete) File: ([^\r\n]+)$/m);
+    if (match) return basename(match[1]);
+  }
+  return "";
+}
+
 // Passive status bridge. Only the session visible in this TUI may update its pane.
 export function installBridge(ctx, report) {
   const visible = () => {
@@ -30,7 +56,7 @@ export function installBridge(ctx, report) {
     })
   );
   // Tool event schemas publish names separately from calls. Keep only bounded
-  // IDs/names, never inputs, outputs, progress text, or message content.
+  // IDs/names/filename basenames, never inputs, outputs or progress content.
   const onTool = (name, phase) => ctx.data.on(name, event => {
     const data = event?.data;
     const sid = data?.sessionID ?? data?.sessionId;
@@ -43,16 +69,21 @@ export function installBridge(ctx, report) {
     }
     if (phase === "call") {
       const tool = names.get(key) ?? "";
-      active.set(key, {sid, tool});
+      const target = toolTarget(tool, data.input);
+      active.set(key, {sid, tool, target});
       if (active.size > 128) active.delete(active.keys().next().value);
-      report("PreToolUse", sid, tool);
+      if (target) report("PreToolUse", sid, tool, target);
+      else report("PreToolUse", sid, tool);
       return;
     }
     names.delete(key);
     if (!active.has(key)) return; // Late completion must not revive a stopped turn.
+    const finished = active.get(key);
     active.delete(key);
     const remaining = [...active.values()].filter(item => item.sid === sid).at(-1);
-    if (remaining) report("PreToolUse", sid, remaining.tool);
+    if (remaining?.target) report("PreToolUse", sid, remaining.tool, remaining.target);
+    else if (remaining) report("PreToolUse", sid, remaining.tool);
+    else if (finished.target) report("PostToolUse", sid, finished.tool, finished.target);
     else report("PostToolUse", sid);
   });
   for (const [name, phase, version] of [

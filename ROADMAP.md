@@ -22,5 +22,7 @@ the Agents section keeps its bottom third.
 
 ## Action details
 
-**Next:** Show native tool targets in agent captions, such as Editing app.py
-and Reading README.md, with generic fallback when no safe target is available.
+**Implemented:** Native tool targets in agent captions, such as Editing app.py,
+Reading README.md and Working on app.py after a file tool completes. Only
+bounded filename/scope basenames are retained; generic captions remain when
+the harness supplies no safe target.

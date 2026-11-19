@@ -2,14 +2,15 @@
 
 - Files created mode 0600 from the first byte (os.open O_CREAT).
 - append+rotate serialized with fcntl LOCK_EX: no stray temp files, no races.
-- Only metadata is stored (pane, kind, agent pid/start, socket, ts). Never
+- Only metadata is stored (pane, kind, agent pid/start, socket, ts, action,
+  optional filename basename). Never
   any pane content or conversation text.
 """
 import fcntl
 import json
 import os
 import time
-from .activity import ACTIONS
+from .activity import ACTIONS, safe_target
 
 from .tmuxutil import state_paths
 
@@ -49,12 +50,14 @@ def read_state(paths):
 
 
 def append_event(paths, pane_id, kind, agent="", agent_pid=0,
-                 agent_start=0, socket_id="", ts=None, action="", completed=False, origin=""):
+                 agent_start=0, socket_id="", ts=None, action="", completed=False, origin="", target=""):
     rec = {"t": ts if ts is not None else time.time(), "pane": pane_id,
            "kind": kind, "agent": agent or "", "apid": agent_pid or 0,
            "astart": agent_start or 0, "sock": socket_id or ""}
     if action in ACTIONS:
         rec["action"] = action
+        target=safe_target(target)
+        if target:rec['target']=target
     if kind == "needs-input":
         rec["input_required"] = True
     if completed:
