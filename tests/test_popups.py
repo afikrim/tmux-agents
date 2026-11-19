@@ -262,6 +262,36 @@ class PopupTTYTest(unittest.TestCase):
         self.assertEqual(self.t('list-panes','-a','-F','#{pane_id}|#{pane_pid}').stdout, before)
         self.assertEqual(self.t('display-message','-p','-c',self.name,'#{pane_id}').stdout.strip(), main)
 
+    def test_history_popup_search_opens_live_conversation_without_duplicate(self):
+        agent=Path(self.temp.name)/'codex'
+        agent.write_text('#!/bin/sh\nwhile true; do sleep 1; done\n')
+        agent.chmod(0o755)
+        pane=self.t('new-window','-d','-t','beta search','-P','-F','#{pane_id}',str(agent)).stdout.strip()
+        self.t('select-pane','-t',pane,'-T','Saved login conversation')
+        socket=self.t('display-message','-p','#{socket_path},#{pid},0').stdout.strip()
+        env=dict(self.env,TMUX=socket,TMUX_PANE=pane)
+        result=subprocess.run([sys.executable,str(ROOT/'hooks/agent-event'),'--agent','codex'],
+            input=json.dumps(dict(hook_event_name='SessionStart',session_id='saved-login')),
+            env=env,capture_output=True,text=True,timeout=10)
+        self.assertEqual(result.returncode,0,result.stderr)
+        before=self.t('list-panes','-a','-F','#{pane_id}|#{pane_pid}').stdout
+        command=[sys.executable,str(ROOT/'bin/tmux-agents'),'--socket-path',self.prefix[1],
+                 'history','--client',self.name]
+        popup=subprocess.Popen(command,env=self.env,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        try:
+            self.drain(.7)
+            os.write(self.master,b'login')
+            self.drain(.25)
+            os.write(self.master,b'\r')
+            popup.communicate(timeout=8)
+            self.assertEqual(popup.returncode,0)
+            self.assertEqual(self.t('display-message','-p','-c',self.name,'#{pane_id}').stdout.strip(),pane)
+            self.assertEqual(before,self.t('list-panes','-a','-F','#{pane_id}|#{pane_pid}').stdout)
+        finally:
+            if popup.poll() is None:
+                popup.terminate()
+                popup.communicate(timeout=3)
+
     def test_project_click_leaves_destination_sidebar_for_last_terminal(self):
         self.t('set-option','-g','mouse','on')
         main=self.t('display-message','-p','-t','beta search','#{pane_id}').stdout.strip()

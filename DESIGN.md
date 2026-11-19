@@ -79,6 +79,12 @@ pausing at both ends. Side-panel focus preserves the selected terminal title.
 Navigation uses text. The user-requested sleeping kaomoji `(－ω－) zzZ` identifies idle captions.
 
 ## Components
+Conversation history uses the existing popup geometry and search controls.
+Entries show a conversation title, provider, project and last-seen date.
+Enter visits a verified live pane or resumes the exact provider conversation;
+metadata-only history stays separate from the live agent list. Empty history
+explains that native hooks must first observe a conversation ID.
+
 Project names identify sessions; counts below use ▶ running and ● idle,
 then a middle-dot separator and unread count only when nonzero.
 Unread counts are underlined when actionable and open the first unread terminal.

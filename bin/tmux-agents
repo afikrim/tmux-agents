@@ -19,7 +19,7 @@ import time
 
 BASE = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.insert(0, BASE)
-from lib import adapters, detect, status as st, store, ui, theme, activity  # noqa: E402
+from lib import adapters, detect, status as st, store, ui, theme, activity, history  # noqa: E402
 from lib.tmuxutil import (cli_socket_flags, resolve_socket,
                            socket_id_of, state_paths,  # noqa: E402
                           run_tmux, tmux_lines)
@@ -54,7 +54,7 @@ def list_all(prefix):
     fmt = ("#{session_id}\t#{session_name}\t#{window_id}\t#{window_index}\t"
            "#{window_name}\t#{pane_id}\t#{pane_pid}\t#{pane_active}\t"
            "#{window_active}\t#{window_width}\t#{pane_current_path}\t"
-           "#{window_flags}\t#{@tmux_agents_sidebar}\t#{@tmux_agents_name}\t#{pane_current_command}\t#{@tmux_agents_diff}\t#{pane_title}")
+           "#{window_flags}\t#{@tmux_agents_sidebar}\t#{@tmux_agents_name}\t#{pane_current_command}\t#{@tmux_agents_diff}\t#{@tmux_agents_conversation}\t#{pane_title}")
     panes = []
     for line in tmux_lines(prefix, "list-panes", "-a", "-F", fmt):
         parts = line.split("\t")
@@ -77,7 +77,8 @@ def list_all(prefix):
                       "custom_name": parts[13] if len(parts) > 13 else "",
                       "program": parts[14] if len(parts) > 14 else "",
                       "diff": len(parts) > 15 and parts[15] == "1",
-                      "title": "\t".join(parts[16:]) if len(parts) > 16 else ""})
+                      "conversation": parts[16] if len(parts) > 16 else "",
+                      "title": "\t".join(parts[17:]) if len(parts) > 17 else ""})
     return panes
 
 
@@ -204,6 +205,11 @@ def daemon_once(prefix, paths, tab_animation=None):
         ident = detect.agent_identity(pid, table, starts) if pid else None
         agent = ident[0] if ident else ""
         alive = ident is not None
+        if ident and p.get('conversation', '').startswith(agent+':'):
+            history.remember(agent, p['conversation'].split(':',1)[1],
+                title=ui.pane_name(p.get('custom_name',''),p.get('title',''),agent,p['path']),
+                directory=p['path'], project=p['session'], pane=pane_id, socket=sid,
+                pid=ident[1], start=ident[2], refresh=True)
         ev = latest.get(pane_id)
         bound_ok = False
         evinfo = None
@@ -781,6 +787,10 @@ def cmd_sidebar(args):
                             rows = ui.build_rows(sessions, project_id)
                             cursor = next((i for i, row in enumerate(rows) if row["ref"] == chosen["ref"]), 0)
                     continue
+                if key == "h":
+                    from lib.popups import open_popup
+                    open_popup(prefix, paths, "history", origin_client)
+                    continue
                 if key == "?":
                     from lib.popups import open_popup
                     open_popup(prefix, paths, "help", origin_client)
@@ -1084,6 +1094,55 @@ def cmd_launch(args, prefix=None):
     return 0
 
 
+def cmd_resume(args):
+    import shutil
+    prefix = P(args)
+    client = args.client or run_tmux(prefix, 'display-message', '-p', '#{client_name}')[1].strip()
+    record = next((r for r in history.read() if r['id'] == args.record), None)
+    if not record:
+        print('Conversation not found in history', file=sys.stderr)
+        return 1
+    panes = list_all(prefix)
+    pane = next((p for p in panes if p['pane_id'] == record.get('pane')
+                 and record.get('socket') == socket_id_of(prefix)
+                 and p.get('conversation') == record['provider']+':'+record['conversation']), None)
+    if pane:
+        ident = detect.agent_identity(pane['pid'], detect.process_table())
+        if (ident and ident[0] == record['provider'] and ident[1] == record.get('pid')
+                and abs(ident[2]-record.get('start',0)) < 2):
+            row = dict(kind='pane', ref=pane['pane_id'], target=('pane',pane['pane_id']),
+                       sess_id=pane['session_id'], win_id=pane['window_id'])
+            return do_activate(prefix, state_paths(prefix), row, client=client)
+    directory = record.get('directory', '')
+    if not os.path.isabs(directory) or not os.path.isdir(directory):
+        print('Conversation directory is missing: '+directory, file=sys.stderr)
+        return 1
+    executable = shutil.which(args.exe or record['provider'])
+    if not executable:
+        print('Agent executable not found: '+record['provider'], file=sys.stderr)
+        return 1
+    argv = [os.path.abspath(executable), *history.resume_args(record)]
+    session = next((p['session_id'] for p in panes if p['session'] == record.get('project')), '')
+    if session:
+        command = ['new-window','-t',session,'-P','-F','#{pane_id}']
+    else:
+        command = ['new-session','-d','-s',record.get('project') or 'history',
+                   '-P','-F','#{pane_id}']
+    rc, out, error = run_tmux(prefix, *command, '-n', record['provider'], '-c', directory, *argv)
+    if rc:
+        print(error.strip(), file=sys.stderr)
+        return rc
+    target = out.strip()
+    ensure_sidebars(prefix, state_paths(prefix))
+    if client:
+        session = run_tmux(prefix,'display-message','-p','-t',target,'#{session_id}')[1].strip()
+        rc,_,error = run_tmux(prefix,'switch-client','-c',client,'-t',session)
+        if rc:
+            print('Conversation opened; could not switch client: '+error.strip(), file=sys.stderr)
+            return rc
+    return run_tmux(prefix,'select-pane','-t',target)[0]
+
+
 # ---------- manual/test event (binds to current agent identity) ----------
 
 def cmd_event(args):
@@ -1134,6 +1193,7 @@ HOOK_LINES = [
 # Keys: M-e focus exact sidebar, prefix S per-window toggle, prefix a menu.
 # Prefix x/o/C and all other defaults are left untouched.
 KEY_LINES = [
+    ('prefix', 'H', 'run-shell \'__BASE__ __SOCK__ history\''),
     ('root', 'M-e', 'run-shell \'__BASE__ __SOCK__ focus --window "#{window_id}" --pane "#{pane_id}\''),
     ('prefix', 's', 'run-shell \'__BASE__ __SOCK__ sessions\''),
     ('prefix', '?', 'run-shell \'__BASE__ __SOCK__ help\''),
@@ -1339,11 +1399,12 @@ def cmd_install(args):
     block += "run-shell -b " + quote(shellbase + " daemon-start") + "\n"
     for table, key, action in (("root", "M-e", "focus"), ("prefix", "S", "toggle"),
                                ("prefix", "a", "menu"), ("prefix", "v", "diff"),
-                               ("prefix", "s", "sessions"), ("prefix", "?", "help")):
+                               ("prefix", "s", "sessions"), ("prefix", "?", "help"),
+                               ("prefix", "H", "history")):
         command = shellbase + " " + action + " --window '#{window_id}'"
         if action != "toggle":
             command += " --pane '#{pane_id}'"
-        if action in ("sessions", "help"):
+        if action in ("sessions", "help", "history"):
             command += " --client '#{client_name}'"
         block += "bind-key -T %s %s run-shell %s\n" % (table, key, quote(command))
     block += "\n"
@@ -1424,6 +1485,7 @@ def cmd_uninstall(args):
     finally:
         os.close(lock)
     for p in list_all(prefix):
+        run_tmux(prefix, "set-option", "-pu", "-t", p["pane_id"], "@tmux_agents_conversation")
         run_tmux(prefix, "set-option", "-pu", "-t", p["pane_id"], "@tmux_agents_diff_tracking")
         run_tmux(prefix, "set-option", "-pu", "-t", p["pane_id"], "@tmux_agents_diff_root")
     checkpoint_dir = os.path.join(paths["dir"], "diff")
@@ -1496,14 +1558,20 @@ def main(argv=None):
     sub.add_parser("sidebar"); sub.add_parser("ensure")
     h = sub.add_parser("hide"); h.add_argument("--all-windows", action="store_true")
     h.add_argument("--window", default="")
-    for name in ("toggle", "focus", "menu", "diff", "sessions", "help", "new-project"):
+    for name in ("toggle", "focus", "menu", "diff", "sessions", "help", "new-project", "history"):
         p = sub.add_parser(name)
         p.add_argument("--window", default="")
         p.add_argument("--pane", default="")
         if name == "diff":
             p.add_argument("--directory", default="", help="Git checkout to show (default: terminal cwd)")
-        if name in ("sessions", "help", "new-project"):
+        if name in ("sessions", "help", "new-project", "history"):
             p.add_argument("--client", default="")
+        if name == 'history':
+            p.add_argument('--list', action='store_true', help='Print saved conversation metadata as JSON')
+    resume = sub.add_parser('resume', help='Open a live or saved conversation from history')
+    resume.add_argument('record')
+    resume.add_argument('--client', default='')
+    resume.add_argument('--exe', default='', help='Executable override for wrappers/tests')
     rn = sub.add_parser("rename", help="rename a sidebar conversation, session or window")
     targets = rn.add_mutually_exclusive_group()
     targets.add_argument("--pane")
@@ -1512,7 +1580,7 @@ def main(argv=None):
     rn.add_argument("--reset", action="store_true", help="restore automatic conversation title")
     rn.add_argument("name", nargs="?")
     popup = sub.add_parser("popup", help=argparse.SUPPRESS)
-    popup.add_argument("--kind", choices=("sessions", "help", "new-project"), required=True)
+    popup.add_argument("--kind", choices=("sessions", "help", "new-project", "history"), required=True)
     popup.add_argument("--client", required=True)
     popup.add_argument("--window", default="")
     dv = sub.add_parser("diff-view", help=argparse.SUPPRESS)
@@ -1548,7 +1616,6 @@ def main(argv=None):
     if args.command == "daemon":
         prefix, paths = P(args), paths_of(args)
         if args.once:
-            import json
             print(json.dumps(daemon_once(prefix, paths), indent=1)[:3000])
         else:
             daemon_loop(prefix, paths)
@@ -1569,7 +1636,11 @@ def main(argv=None):
     elif args.command == "menu":
         do_menu(P(args), getattr(args, "window", ""),
                 getattr(args, "pane", ""))
-    elif args.command in ("sessions", "help"):
+    elif args.command == 'resume':
+        sys.exit(cmd_resume(args) or 0)
+    elif args.command == 'history' and args.list:
+        print(json.dumps(history.read(), indent=2))
+    elif args.command in ("sessions", "help", "history"):
         from lib.popups import open_popup
         sys.exit(open_popup(P(args), paths_of(args), args.command, args.client))
     elif args.command == 'new-project':

@@ -15,6 +15,7 @@ The session label and clock stay hidden. Uninstall restores the previous bar.
 | Ctrl-b, s | Search and switch projects in a popup |
 | Ctrl-b, S | Hide/show the sidebar in this window |
 | Ctrl-b, ? | Open the shortcut reference popup |
+| Ctrl-b, H / h in sidebar | Search conversation history; open or resume |
 | Ctrl-b, a | Open the new-agent menu |
 | Ctrl-b, v | Toggle the right-hand diff pane |
 | Click a top tab / Ctrl-b, n or p | Switch windows, including shells and editors |
@@ -41,6 +42,28 @@ not visited. Visiting the real terminal in an attached client marks it read;
 hovering, previewing a project, and detached active panes do not. The same
 notice stays read across polls; a later turn can become unread again. Tracking
 starts when this version runs and does not reconstruct conversation history.
+
+### Conversation history
+
+**Ctrl-b, H** (or **h** in the sidebar) opens searchable conversation history.
+Search by title, project, directory or provider, then press Enter. A verified
+live conversation opens its exact pane; a closed one resumes in a new window
+in its recorded project and directory. A removed project session is recreated.
+Escape closes the popup. A missing directory or agent executable produces an
+error before a window is created.
+
+History starts collecting when native hooks report a conversation ID. Existing
+agents appear after their next supported hook event; there is no transcript
+scan or import. Titles and nicknames update while the agent runs. Conversation
+messages, prompts, tool output and credentials are never copied into the index.
+The provider remains responsible for retaining its native conversation data.
+
+The private index is `history.json` under the tmux-agents state root, shared
+across this machine's tmux sockets and retained across server restarts. It keeps
+the 2,000 most recently observed conversations and survives uninstall. The index
+is local metadata, not a backup or a way to transfer provider chats to another
+machine. The CLI equivalents are `tmux-agents history --list` and
+`tmux-agents resume RECORD_ID` (the opaque record ID comes from the list).
 
 Each agent entry has an activity caption below its title. Native hooks supply
 bounded labels such as **Reading files**, **Editing files**, **Running command**,

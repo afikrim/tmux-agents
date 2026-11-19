@@ -98,7 +98,7 @@ class PortableTest(unittest.TestCase):
             source.mkdir()
             for name in ('bin', 'lib', 'hooks', 'plugins', 'extras', 'scripts'):
                 shutil.copytree(ROOT / name, source / name, ignore=shutil.ignore_patterns('__pycache__'))
-            for name in ('install.sh', 'README.md', 'DESIGN.md', 'LICENSE-NOTICE', 'VERSION'):
+            for name in ('install.sh', 'README.md', 'DESIGN.md', 'ROADMAP.md', 'LICENSE-NOTICE', 'VERSION'):
                 shutil.copy2(ROOT / name, source / name)
             conf = home / '.tmux.conf'
             conf.write_text('set -g status-left ORIGINAL\nset -g mouse off\nbind-key S display-message sentinel\n' +

@@ -10,7 +10,7 @@ name = 'tmux-agents-' + version
 output = root / 'dist' / (name + '.tar.gz')
 output.parent.mkdir(exist_ok=True)
 allowed = ['bin', 'lib', 'hooks', 'plugins', 'extras', 'scripts', 'tests', 'README.md',
-           'DESIGN.md', 'LICENSE-NOTICE', 'VERSION', 'install.sh', 'Dockerfile.test']
+           'DESIGN.md', 'ROADMAP.md', 'LICENSE-NOTICE', 'VERSION', 'install.sh', 'Dockerfile.test']
 def clean(info):
     if any(part in ('__pycache__', 'node_modules') for part in Path(info.name).parts) or info.name.endswith('.pyc'):
         return None

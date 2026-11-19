@@ -15,7 +15,7 @@ import sys
 
 BASE = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.insert(0, BASE)
-from lib import adapters, detect, store, activity  # noqa: E402
+from lib import adapters, detect, store, activity, history, ui  # noqa: E402
 from lib.tmuxutil import resolve_socket, state_paths  # noqa: E402
 
 
@@ -88,6 +88,25 @@ def main(argv):
     if not apid or not astart or (agent and ident and ident[0] != agent):
         return 0  # no current matching agent: never bind another pane's status
     paths = state_paths(prefix)
+    if os.path.exists(os.path.join(paths['dir'], 'disabled')):
+        return 0
+    conversation = history.conversation_id(payload)
+    if conversation:
+        try:
+            # Read terminal metadata only; never copy prompts or transcripts.
+            def meta(value):
+                return subprocess.run(['tmux', *prefix, 'display-message', '-p', '-t', pane, value],
+                                      capture_output=True, text=True, timeout=2).stdout.rstrip('\n')
+            cwd = meta('#{pane_current_path}')
+            title = ui.pane_name(meta('#{@tmux_agents_name}'), meta('#{pane_title}'), agent, cwd)
+            history.remember(agent, conversation, title=title, directory=cwd,
+                             project=meta('#{session_name}'), pane=pane, socket=sid,
+                             pid=apid, start=astart)
+            subprocess.run(['tmux', *prefix, 'set-option', '-p', '-t', pane,
+                            '@tmux_agents_conversation', agent+':'+conversation],
+                           capture_output=True, timeout=2)
+        except Exception:
+            pass  # History must never block an agent's lifecycle hooks.
     if raw_kind.lower() == "userpromptsubmit" and not os.path.exists(os.path.join(paths["dir"], "disabled")):
         try:
             flag = subprocess.run(["tmux", *prefix, "show-options", "-p", "-v", "-t", pane,

@@ -32,7 +32,7 @@ if launcher.exists() or launcher.is_symlink():
     if not launcher.is_symlink() or launcher.resolve() != entry:
         sys.exit('Refusing to replace unrelated launcher: ' + str(launcher))
 RUNTIME_DIRS = ('bin', 'lib', 'hooks', 'plugins', 'extras')
-RUNTIME_DOCS = ('README.md', 'DESIGN.md', 'LICENSE-NOTICE', 'VERSION')
+RUNTIME_DOCS = ('README.md', 'DESIGN.md', 'ROADMAP.md', 'LICENSE-NOTICE', 'VERSION')
 if os.path.islink(target):
     sys.exit('Refusing to follow symlink runtime directory: ' + str(target))
 target.parent.mkdir(parents=True, exist_ok=True)
