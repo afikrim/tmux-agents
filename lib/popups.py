@@ -25,6 +25,8 @@ SHORTCUTS = [
     ('Enter', 'Navigation / Open selected project or agent'),
     ('x', 'Navigation / Launch an agent in a new window'),
     ('n (agent menu)', 'Navigation / Create a project with its first agent'),
+    ('C / A / O (agent menu)', 'Launch / Codex, Claude or OpenCode in a new Git worktree'),
+    ('w (new project, Agent field)', 'Launch / Toggle a separate Git worktree'),
     ('r', 'Navigation / Rename project or conversation label'),
     ('Shift-r', 'Navigation / Rename the selected window'),
     ('d', 'Navigation / Toggle diff for selected agent'),

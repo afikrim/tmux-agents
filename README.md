@@ -137,6 +137,32 @@ The same action is available from the CLI:
 tmux-agents launch --project my-project --directory ~/code/my-project codex
 ```
 
+### Optional agent worktrees
+
+In the agent menu, **c / a / o** launches Codex / Claude / OpenCode normally;
+**C / A / O** launches that provider in a new Git worktree. In the new-project
+form, select the Agent field and press **w** or Space to toggle worktree mode.
+It is off by default.
+
+```sh
+tmux-agents launch --worktree codex
+tmux-agents launch --worktree --branch agents/auth-fix claude
+tmux-agents launch --project review --directory ~/code/app --worktree opencode
+```
+
+Worktree mode requires Git and at least one commit. Each agent gets a new branch
+and checkout from the current `HEAD`; staged, unstaged, ignored and untracked
+files stay in the original checkout. A tracked current subdirectory is preserved.
+Branches default to unique `agents/PROVIDER-…` names; a custom branch must be new.
+Checkouts live outside your repository, under the tmux-agents state root's
+`worktrees/` directory. The diff pane follows the agent's checkout normally.
+
+Closing an agent or uninstalling tmux-agents keeps its worktree and branch.
+Use `git worktree list` to inspect them and Git's normal merge/remove commands
+when finished. A failed terminal launch rolls back an untouched new checkout;
+if it has changed, it is retained and its path is reported. No force removal,
+reset, stash or automatic merge is performed.
+
 When its last real terminal exits, the owned navigation pane is removed so
 tmux closes the empty window. Other running panes and terminals deliberately
 retained with `remain-on-exit` are preserved.

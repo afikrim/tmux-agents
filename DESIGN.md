@@ -103,6 +103,10 @@ the last terminal when a side panel held focus.
 Shell/editor panes are excluded. Splits hosting separate agents each get an
 entry; counts use those same agent panes. New project + agent is a compact native
 popup that creates the session and its first agent window in one action.
+Worktree mode is explicit and off by default. The Agent field exposes its state
+and a w/Space toggle; existing-project launches have clearly named worktree menu
+entries. Agent activity captions remain about the task, while the Git checkout
+and branch isolate its changes. Closing an agent never deletes its worktree.
 Pointer hover uses a subtler background and scrolls clipped titles without
 moving keyboard selection, switching projects, or taking terminal focus.
 Ctrl-b s opens the project picker; ? opens contextual shortcut help. These

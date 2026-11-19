@@ -197,6 +197,42 @@ class PopupTTYTest(unittest.TestCase):
         self.assertEqual(relative.returncode,0,relative.stdout+relative.stderr)
         self.assertEqual(self.t('list-windows','-t','relative','-F','#{window_name}').stdout.strip(),'codex')
 
+    def test_new_project_form_can_launch_agent_in_a_worktree(self):
+        directory=Path(self.temp.name)/'source repo'
+        directory.mkdir()
+        for args in (['init','-q'],['config','user.name','Test'],['config','user.email','test@example.invalid'],
+                     ['config','commit.gpgsign','false']):
+            subprocess.run(['git','-C',str(directory),*args],check=True,capture_output=True)
+        (directory/'file').write_text('committed')
+        subprocess.run(['git','-C',str(directory),'add','.'],check=True,capture_output=True)
+        subprocess.run(['git','-C',str(directory),'commit','-qm','Initial'],check=True,capture_output=True)
+        binaries=Path(self.temp.name)/'bin'; binaries.mkdir()
+        agent=binaries/'codex'
+        agent.write_text('#!/bin/sh\nwhile true; do sleep 1; done\n'); agent.chmod(0o755)
+        self.env['PATH']=str(binaries)+os.pathsep+self.env['PATH']
+        self.t('set-environment','-g','PATH',self.env['PATH'])
+        process=self.popup('new-project','New project + agent')
+        try:
+            os.write(self.master,('\x15isolated\t\x15'+str(directory)+'\tw\r\r').encode())
+            deadline=time.monotonic()+8
+            while time.monotonic()<deadline:
+                self.drain(.1)
+                current=self.t('display-message','-p','-c',self.name,'#{session_name}').stdout.strip()
+                if current=='isolated': break
+            self.assertEqual(current,'isolated')
+            out,err=process.communicate(timeout=3)
+            self.assertEqual(process.returncode,0,out+err)
+            path=self.t('display-message','-p','-c',self.name,'#{pane_current_path}').stdout.strip()
+            self.assertNotEqual(Path(path).resolve(),directory.resolve())
+            branch=subprocess.check_output(['git','-C',path,'branch','--show-current'],text=True).strip()
+            self.assertTrue(branch.startswith('agents/codex-'))
+            self.assertEqual((Path(path)/'file').read_text(),'committed')
+            after=self.t('list-panes','-a','-F','#{pane_id} #{pane_pid}').stdout.splitlines()
+            self.assertTrue(all(line in after for line in self.original.splitlines()))
+        finally:
+            if process.poll() is None:
+                process.terminate(); process.communicate(timeout=3)
+
     def test_agent_menu_opens_new_project_form(self):
         window=self.t('display-message','-p','-c',self.name,'#{window_id}').stdout.strip()
         process=subprocess.Popen([sys.executable,str(ROOT/'bin/tmux-agents'),'--socket-path',self.prefix[1],

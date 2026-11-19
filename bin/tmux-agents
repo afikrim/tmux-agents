@@ -14,6 +14,7 @@ import os
 import re
 import shlex
 import signal
+import subprocess
 import sys
 import time
 
@@ -984,7 +985,12 @@ def do_menu(prefix, origin_window="", origin_pane=""):
         command = shlex.join([sys.executable, script, *cli_socket_flags(prefix),
                               "launch", "--window", target, kind])
         cmd = 'run-shell "' + esc_tmux(command) + '"'
-        items += [kind[0].upper() + kind[1:], kind[0], cmd]
+        key = 'a' if kind=='claude' else kind[0]
+        items += [kind[0].upper() + kind[1:], key, cmd]
+        command = shlex.join([sys.executable, script, *cli_socket_flags(prefix),
+                              'launch','--window',target,'--worktree',kind])
+        items += [kind.capitalize()+' / new Git worktree',key.upper(),
+                  'run-shell "'+esc_tmux(command)+'"']
     command=shlex.join([sys.executable,script,*cli_socket_flags(prefix),'new-project',
                         '--window',target,'--client','#{client_name}'])
     items += ['New project + agent','n','run-shell "'+esc_tmux(command)+'"']
@@ -1040,9 +1046,10 @@ def cmd_launch(args, prefix=None):
     else:
         rc, cur, _ = run_tmux(prefix, "display-message", "-p", "#{window_id}")
         winspec = cur.strip() if rc == 0 else ""
-    cwd, sess = "", ""
+    cwd, sess, real_active = "", "", False
     table = detect.process_table()
-    for p in list_all(prefix):
+    panes = list_all(prefix)
+    for p in panes:
         if winspec and p["window_id"] != winspec:
             continue
         if (p.get("diff") or p.get("sidebar") or (p["pid"] and detect.is_sidebar_tree(p["pid"], table))):
@@ -1051,7 +1058,14 @@ def cmd_launch(args, prefix=None):
             cwd, sess = p["path"], p["session_id"]
         if p["active"]:
             cwd, sess = p["path"], p["session_id"]
+            real_active = True
             break
+    if not real_active and winspec:
+        remembered = run_tmux(prefix,'show-window-options','-v','-t',winspec,'@tmux_agents_tab_pane')[1].strip()
+        pane = next((p for p in panes if p['pane_id']==remembered and p['window_id']==winspec
+                     and not p.get('sidebar') and not p.get('diff')), None)
+        if pane:
+            cwd,sess=pane['path'],pane['session_id']
     if not cwd or cwd == "$HOME":
         cwd = os.path.expanduser("~")
     if getattr(args,'directory',''):
@@ -1068,6 +1082,12 @@ def cmd_launch(args, prefix=None):
         if "=" in item:
             env_args += ["-e", item]
     project=getattr(args,'project','')
+    worktree=None
+    wants_worktree=getattr(args,'worktree',False)
+    branch=getattr(args,'branch','')
+    if branch and not wants_worktree:
+        print('launch failed: --branch requires --worktree')
+        return 1
     if project:
         if not project.strip() or re.search(r'[.:\x00-\x1f\x7f]',project) or len(project)>120:
             print('launch failed: Project name must be 1–120 characters without dots, colons or controls')
@@ -1078,11 +1098,39 @@ def cmd_launch(args, prefix=None):
             print('launch failed: Agent executable not found: '+prog)
             return 1
         argv[0]=os.path.abspath(resolved)
+        if run_tmux(prefix,'has-session','-t','='+project)[0]==0:
+            print('launch failed: Project already exists')
+            return 1
+    if wants_worktree:
+        import shutil
+        from lib import worktrees
+        resolved=shutil.which(prog)
+        if not resolved:
+            print('launch failed: Agent executable not found: '+prog)
+            return 1
+        argv[0]=os.path.abspath(resolved)
+        try:
+            worktree=worktrees.create(cwd,kind,branch)
+            cwd=worktree['directory']
+        except (ValueError,OSError,subprocess.TimeoutExpired) as error:
+            print('launch failed: '+str(error))
+            return 1
+    def launch_failed(error):
+        print('launch failed: '+error.strip())
+        if worktree:
+            from lib import worktrees
+            try:
+                removed=worktrees.rollback(worktree)
+            except Exception:
+                removed=False
+            if not removed:
+                print('Worktree retained for inspection: '+worktree['path']+' ('+worktree['branch']+')')
+        return 1
+    if project:
         rc,out,err=run_tmux(prefix,'new-session','-d','-P','-F','#{session_id}',
                             '-s',project,'-n',kind,'-c',cwd,*env_args,*argv)
         if rc:
-            print('launch failed: '+err.strip())
-            return 1
+            return launch_failed(err)
         client=getattr(args,'client','')
         if client:
             rc,_,err=run_tmux(prefix,'switch-client','-c',client,'-t',out.strip())
@@ -1094,8 +1142,7 @@ def cmd_launch(args, prefix=None):
     rc, _, err = run_tmux(prefix, "new-window", *dest, *env_args, "-n", kind,
                            "-c", cwd, *argv)
     if rc != 0:
-        print("launch failed: %s" % err.strip())
-        return 1
+        return launch_failed(err)
     return 0
 
 
@@ -1649,6 +1696,8 @@ def main(argv=None):
     lz.add_argument('--project',default='',help='Create a new project session with this agent as its first window')
     lz.add_argument('--directory',default='')
     lz.add_argument('--client',default='')
+    lz.add_argument('--worktree',action='store_true',help='Create a separate Git branch and checkout for this agent')
+    lz.add_argument('--branch',default='',help='New branch name for --worktree (default: unique agents/ name)')
     lz.add_argument("--window", default="",
                     help="target window id (default: current window)")
     lz.add_argument("--exe", default="",

@@ -14,8 +14,8 @@ from .tmuxutil import run_tmux
 KINDS=('codex','claude','opencode')
 
 
-def frame(name,directory,kind,selected,width,height,error=''):
-    fields=['Name: '+name,'Folder: '+directory,'Agent: < '+kind+' >','Create project + agent']
+def frame(name,directory,kind,selected,width,height,error='',worktree=False):
+    fields=['Name: '+name,'Folder: '+directory,'Agent: < '+kind+' > / worktree '+('on' if worktree else 'off'),'Create project + agent']
     count=max(1,height-3)
     start=min(max(0,selected-count+1),max(0,len(fields)-count))
     lines=[ui.styled(' New project + agent',width,'accent',bold=True)]
@@ -26,7 +26,7 @@ def frame(name,directory,kind,selected,width,height,error=''):
         lines.append(ui.styled((' > ' if selected==index else '   ')+value,width,
                      'fg','selected' if selected==index else 'bg'))
     lines.append(ui.styled(' '+error,width,'rose'))
-    lines.append(ui.styled(' Tab next · Enter continue · Esc cancel',width,'muted'))
+    lines.append(ui.styled(' Tab next · Enter continue · w worktree (Agent) · Esc cancel',width,'muted'))
     lines=lines[:height]
     lines.extend(ui.styled('',width) for _ in range(height-len(lines)))
     return lines
@@ -38,7 +38,7 @@ def run(prefix,client,window,launch):
     directory=run_tmux(prefix,'display-message','-p','-t',window or '=', '#{pane_current_path}')[1].strip()
     directory=directory if os.path.isdir(directory) else os.path.expanduser('~')
     name=os.path.basename(directory.rstrip('/')).replace('.','-').replace(':','-') or 'project'
-    selected,kind,error=0,0,''
+    selected,kind,error,worktree=0,0,'',False
     fd=sys.stdin.fileno()
     old=termios.tcgetattr(fd)
     decoder=ui.InputDecoder()
@@ -47,7 +47,7 @@ def run(prefix,client,window,launch):
         sys.stdout.write('\x1b[?1049h\x1b[?25l'+ui.BASE+'\x1b[2J')
         while True:
             size=os.get_terminal_size(fd)
-            lines=frame(name,directory,KINDS[kind],selected,size.columns,size.lines,error)
+            lines=frame(name,directory,KINDS[kind],selected,size.columns,size.lines,error,worktree)
             sys.stdout.write('\x1b[H'+'\r\n'.join(lines)); sys.stdout.flush()
             ready=select.select([fd],[],[],.05 if decoder.pending else .25)[0]
             if not ready:
@@ -64,6 +64,8 @@ def run(prefix,client,window,launch):
                     selected=(selected-1)%4
                 elif selected==2 and key in ('left','right'):
                     kind=(kind+(1 if key=='right' else -1))%len(KINDS)
+                elif selected==2 and key in ('w',' '):
+                    worktree=not worktree
                 elif key=='enter':
                     if selected<3:
                         selected+=1
@@ -74,7 +76,7 @@ def run(prefix,client,window,launch):
                         error='Enter a project folder'; selected=1; continue
                     output=io.StringIO()
                     args=SimpleNamespace(kind=KINDS[kind],exe='',launch_args=[],env=[],window=window,
-                                         project=name.strip(),directory=directory,client=client)
+                                         project=name.strip(),directory=directory,client=client,worktree=worktree,branch='')
                     with contextlib.redirect_stdout(output):
                         rc=launch(args,prefix)
                     if not rc: return
