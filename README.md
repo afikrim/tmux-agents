@@ -364,6 +364,33 @@ Check the machine any time with:
 tmux-agents doctor
 ```
 
+Doctor reports prerequisites, this tmux server's daemon/snapshot health, provider
+hook/plugin configuration, the last retained lifecycle/hook event, and each live
+agent's status source. Unknown states explain missing signals, expired events,
+process mismatches or a snapshot still waiting for a new event.
+
+**Configured** means the expected handlers/plugin entries exist. **Observed**
+hook delivery means a native hook event was recorded; per-agent confirmation also
+requires that event to match its current process. Historical events from another
+process, manually injected test events and legacy events of unknown origin do
+not confirm that the current agent's hooks work. Configured Codex hooks may still
+need trust approval in `/hooks`; doctor does not inspect or bypass that approval.
+With no retained hook event, delivery stays **unverified** until the next native
+event arrives. Existing OpenCode sessions may need a restart to load plugin changes.
+
+```sh
+tmux-agents doctor --json               # structured diagnostic report
+tmux-agents doctor --strict             # also fail on runtime/integration warnings
+tmux-agents doctor --dependencies-only  # installation prerequisites only
+```
+
+Doctor reads metadata and configuration structure without copying configuration
+contents, prompts or terminal text into its report. It does not start a tmux
+server/daemon, launch agents, change focus, or repair settings automatically.
+Required missing dependencies return a nonzero exit status; optional unconfigured
+providers do not fail the normal check. `--strict` additionally fails on reported
+runtime/integration warnings. Installers keep using the prerequisites-only check.
+
 ## CLI
 
 ```sh

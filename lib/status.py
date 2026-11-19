@@ -92,6 +92,18 @@ def event_usable(ev, now, kind=None):
     return True
 
 
+def unknown_reason(event, bound_ok, now=None):
+    """Explain missing evidence without inspecting or retaining terminal content."""
+    now=time.time() if now is None else now
+    if not event:
+        return 'No usable lifecycle event and no recognized screen/activity signal'
+    if not bound_ok:
+        return 'Last lifecycle event is not bound to this agent process'
+    if not event_usable(event,now):
+        return 'Last lifecycle event expired or has an invalid timestamp'
+    return 'No current recognized lifecycle, screen or activity signal'
+
+
 def classify(agent, event, screen_text, alive, prev, screen_changed,
              bound_ok, now=None):
     """Return (status, source).

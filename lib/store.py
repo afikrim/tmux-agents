@@ -49,7 +49,7 @@ def read_state(paths):
 
 
 def append_event(paths, pane_id, kind, agent="", agent_pid=0,
-                 agent_start=0, socket_id="", ts=None, action="", completed=False):
+                 agent_start=0, socket_id="", ts=None, action="", completed=False, origin=""):
     rec = {"t": ts if ts is not None else time.time(), "pane": pane_id,
            "kind": kind, "agent": agent or "", "apid": agent_pid or 0,
            "astart": agent_start or 0, "sock": socket_id or ""}
@@ -59,6 +59,8 @@ def append_event(paths, pane_id, kind, agent="", agent_pid=0,
         rec["input_required"] = True
     if completed:
         rec["completed"] = True
+    if origin in ('hook','manual'):
+        rec['origin'] = origin
     ensure_dir(paths["dir"])
     guard = os.open(paths["events"] + ".lock", os.O_CREAT | os.O_RDWR, 0o600)
     fcntl.flock(guard, fcntl.LOCK_EX)

@@ -264,6 +264,7 @@ def daemon_once(prefix, paths, tab_animation=None):
             "window": p["window_index"], "window_id": p["window_id"],
             "window_name": p["window_name"], "agent": agent,
             "status": s, "source": src, "pid": pid,
+            "reason": st.unknown_reason(evinfo,bound_ok) if s=='unknown' else '',
             "active": p["active"], "updated": time.time(),
             "caption": activity.caption(s, action, src), **notices}
     update_window_tabs(prefix, panes, state, tab_animation)
@@ -1249,7 +1250,7 @@ def cmd_event(args):
             agent = agent or ident[0]
             apid, astart = ident[1], ident[2]
     store.append_event(paths, args.pane, args.kind, agent=agent,
-                       agent_pid=apid, agent_start=astart, socket_id=sid)
+                       agent_pid=apid, agent_start=astart, socket_id=sid, origin='manual')
     print("event recorded")
 
 
@@ -1688,7 +1689,10 @@ def main(argv=None):
     sub.add_parser("status"); sub.add_parser("install")
     cp = sub.add_parser("capture-baseline", help=argparse.SUPPRESS)
     cp.add_argument("--hook-index", type=int, required=True)
-    sub.add_parser("doctor", help="check portable runtime prerequisites")
+    doc=sub.add_parser("doctor", help="check runtime prerequisites and agent integration health")
+    doc.add_argument('--json',action='store_true',help='Print a structured read-only health report')
+    doc.add_argument('--dependencies-only',action='store_true',help='Only check installation prerequisites')
+    doc.add_argument('--strict',action='store_true',help='Return nonzero for integration/runtime warnings')
     un = sub.add_parser("uninstall")
     un.add_argument("--keep-integrations", action="store_true",
                     help="keep Claude/Codex/OpenCode hook entries")
@@ -1791,8 +1795,34 @@ def main(argv=None):
     elif args.command == "capture-baseline":
         capture_baseline(P(args), paths_of(args), args.hook_index)
     elif args.command == "doctor":
-        from lib.portable import doctor
-        sys.exit(doctor())
+        from lib.portable import doctor, dependency_report
+        dependencies=dependency_report()
+        if args.dependencies_only:
+            if args.json: print(json.dumps(dependencies,indent=2))
+            else: doctor(dependencies)
+            sys.exit(0 if dependencies['ok'] else 1)
+        if not dependencies['ok']:
+            if args.json:
+                print(json.dumps(dict(dependencies=dependencies,providers=[],agents=[],
+                    runtime=dict(server=False,daemon='unavailable'),warnings=['Required prerequisites are missing']),indent=2))
+            else: doctor(dependencies)
+            sys.exit(1)
+        from lib import health
+        prefix=P(args)
+        table=detect.process_table()
+        live=[]
+        for pane in list_all(prefix):
+            if pane.get('sidebar') or pane.get('diff'): continue
+            ident=detect.agent_identity(pane['pid'],table) if pane['pid'] else None
+            if ident:
+                live.append(dict(pane=pane['pane_id'],provider=ident[0],pid=ident[1],start=ident[2]))
+        paths=state_paths(prefix)
+        report=health.collect(prefix,paths,live,daemon_alive(paths),dependencies)
+        if args.json: print(json.dumps(report,indent=2))
+        else:
+            doctor(dependencies)
+            print(health.render(report))
+        sys.exit(1 if not dependencies['ok'] or (args.strict and report['warnings']) else 0)
     elif args.command == "uninstall":
         cmd_uninstall(args)
     elif args.command == "integrate":

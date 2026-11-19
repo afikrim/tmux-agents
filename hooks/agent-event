@@ -123,7 +123,7 @@ def main(argv):
     store.append_event(paths, pane, kind, agent=agent, agent_pid=apid,
                        agent_start=astart, socket_id=sid,
                        action=activity.hook_action(raw_kind, payload),
-                       completed=raw_kind.lower() in ("stop", "session.idle", "sessionend"))
+                       completed=raw_kind.lower() in ("stop", "session.idle", "sessionend"), origin='hook')
     return 0
 
 
