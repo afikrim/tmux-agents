@@ -262,6 +262,41 @@ class PopupTTYTest(unittest.TestCase):
         self.assertEqual(self.t('list-panes','-a','-F','#{pane_id}|#{pane_pid}').stdout, before)
         self.assertEqual(self.t('display-message','-p','-c',self.name,'#{pane_id}').stdout.strip(), main)
 
+    def test_attention_inbox_visits_exact_agent_and_rejects_stale_generation(self):
+        agent=Path(self.temp.name)/'codex'
+        agent.write_text('#!/bin/sh\nwhile true; do sleep 1; done\n')
+        agent.chmod(0o755)
+        pane=self.t('new-window','-d','-t','beta search','-P','-F','#{pane_id}',str(agent)).stdout.strip()
+        self.t('select-pane','-t',pane,'-T','Review inbox task')
+        base=[sys.executable,str(ROOT/'bin/tmux-agents'),'--socket-path',self.prefix[1]]
+        time.sleep(.2)
+        for args in (['event','--pane',pane,'--kind','question','--agent','codex'],['daemon','--once']):
+            result=subprocess.run(base+args,env=self.env,capture_output=True,text=True,timeout=10)
+            self.assertEqual(result.returncode,0,result.stderr)
+        before=self.t('list-panes','-a','-F','#{pane_id}|#{pane_pid}').stdout
+        stale=subprocess.run(base+['visit','--pane',pane,'--generation','wrong','--client',self.name],
+                             env=self.env,capture_output=True,text=True,timeout=10)
+        self.assertNotEqual(stale.returncode,0)
+        self.assertEqual(self.t('display-message','-p','-c',self.name,'#{session_name}').stdout.strip(),'alpha')
+        popup=subprocess.Popen(base+['attention','--client',self.name],env=self.env,
+                               stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        try:
+            output=''; deadline=time.monotonic()+4
+            while 'Attention inbox' not in output and time.monotonic()<deadline:
+                output+=self.drain(.2)
+            self.assertIn('Attention inbox',output)
+            os.write(self.master,b'Review\r')
+            _,error=popup.communicate(timeout=8)
+            self.assertEqual(popup.returncode,0,error.decode())
+            self.assertEqual(self.t('display-message','-p','-c',self.name,'#{pane_id}').stdout.strip(),pane)
+            self.assertEqual(before,self.t('list-panes','-a','-F','#{pane_id}|#{pane_pid}').stdout)
+            result=subprocess.run(base+['attention','--next','--client',self.name],env=self.env,
+                                  capture_output=True,text=True,timeout=10)
+            self.assertEqual(result.returncode,0,result.stderr)
+        finally:
+            if popup.poll() is None:
+                popup.terminate(); popup.communicate(timeout=3)
+
     def test_history_popup_search_opens_live_conversation_without_duplicate(self):
         agent=Path(self.temp.name)/'codex'
         agent.write_text('#!/bin/sh\nwhile true; do sleep 1; done\n')

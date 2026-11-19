@@ -568,6 +568,7 @@ def build_sessions(prefix, paths, selected_pane=""):
                                                         info.get("agent", ""), p.get("path", ""), p.get("program", "")),
                            "custom_name": p.get("custom_name", ""),
                            "caption": info.get("caption", ""), "unread": info.get("unread", False),
+                           "generation": info.get("generation", ""),
                            "current": p["active"] and p["win_active"],
                            "selected": p["pane_id"] == selected_pane})
     table = detect.process_table()
@@ -786,6 +787,10 @@ def cmd_sidebar(args):
                             sessions = build_sessions(prefix, paths, selected)
                             rows = ui.build_rows(sessions, project_id)
                             cursor = next((i for i, row in enumerate(rows) if row["ref"] == chosen["ref"]), 0)
+                    continue
+                if key == "i":
+                    from lib.popups import open_popup
+                    open_popup(prefix, paths, "attention", origin_client)
                     continue
                 if key == "h":
                     from lib.popups import open_popup
@@ -1094,6 +1099,41 @@ def cmd_launch(args, prefix=None):
     return 0
 
 
+def visit_agent(prefix, pane_id, generation, client=''):
+    info = store.read_state(state_paths(prefix)).get('panes', {}).get(pane_id, {})
+    pane = next((p for p in list_all(prefix) if p['pane_id']==pane_id
+                 and not p.get('sidebar') and not p.get('diff')), None)
+    if not pane or not generation or info.get('generation') != generation or not info.get('agent'):
+        return 1, 'This agent is no longer available; refresh the inbox.'
+    ident = detect.agent_identity(pane['pid'], detect.process_table())
+    if not ident or ident[0]!=info['agent'] or '%s:%s'%(ident[1],ident[2])!=generation:
+        return 1, 'This agent has exited or been replaced; refresh the inbox.'
+    row=dict(kind='pane',ref=pane_id,target=('pane',pane_id),
+             sess_id=pane['session_id'],win_id=pane['window_id'])
+    return do_activate(prefix,state_paths(prefix),row,client=client), ''
+
+
+def cmd_attention(args):
+    from lib import inbox
+    prefix=P(args)
+    rows=inbox.entries(build_sessions(prefix,state_paths(prefix)))
+    if args.list:
+        print(json.dumps(rows,indent=2))
+        return 0
+    client=args.client or run_tmux(prefix,'display-message','-p','#{client_name}')[1].strip()
+    if args.next:
+        if not rows:
+            print('No agents need attention.')
+            return 0
+        current=run_tmux(prefix,'display-message','-p',*(['-c',client] if client else []),'#{pane_id}')[1].strip()
+        position=next((i+1 for i,row in enumerate(rows) if row['id']==current),0)%len(rows)
+        rc,error=visit_agent(prefix,rows[position]['id'],rows[position]['generation'],client)
+        if error: print(error,file=sys.stderr)
+        return rc
+    from lib.popups import open_popup
+    return open_popup(prefix,state_paths(prefix),'attention',client)
+
+
 def cmd_resume(args):
     import shutil
     prefix = P(args)
@@ -1193,6 +1233,8 @@ HOOK_LINES = [
 # Keys: M-e focus exact sidebar, prefix S per-window toggle, prefix a menu.
 # Prefix x/o/C and all other defaults are left untouched.
 KEY_LINES = [
+    ('prefix', 'I', 'run-shell \'__BASE__ __SOCK__ attention\''),
+    ('prefix', 'N', 'run-shell \'__BASE__ __SOCK__ attention --next\''),
     ('prefix', 'H', 'run-shell \'__BASE__ __SOCK__ history\''),
     ('root', 'M-e', 'run-shell \'__BASE__ __SOCK__ focus --window "#{window_id}" --pane "#{pane_id}\''),
     ('prefix', 's', 'run-shell \'__BASE__ __SOCK__ sessions\''),
@@ -1400,11 +1442,12 @@ def cmd_install(args):
     for table, key, action in (("root", "M-e", "focus"), ("prefix", "S", "toggle"),
                                ("prefix", "a", "menu"), ("prefix", "v", "diff"),
                                ("prefix", "s", "sessions"), ("prefix", "?", "help"),
-                               ("prefix", "H", "history")):
+                               ("prefix", "H", "history"), ("prefix", "I", "attention"),
+                               ("prefix", "N", "attention --next")):
         command = shellbase + " " + action + " --window '#{window_id}'"
         if action != "toggle":
             command += " --pane '#{pane_id}'"
-        if action in ("sessions", "help", "history"):
+        if action in ("sessions", "help", "history", "attention", "attention --next"):
             command += " --client '#{client_name}'"
         block += "bind-key -T %s %s run-shell %s\n" % (table, key, quote(command))
     block += "\n"
@@ -1558,16 +1601,23 @@ def main(argv=None):
     sub.add_parser("sidebar"); sub.add_parser("ensure")
     h = sub.add_parser("hide"); h.add_argument("--all-windows", action="store_true")
     h.add_argument("--window", default="")
-    for name in ("toggle", "focus", "menu", "diff", "sessions", "help", "new-project", "history"):
+    for name in ("toggle", "focus", "menu", "diff", "sessions", "help", "new-project", "history", "attention"):
         p = sub.add_parser(name)
         p.add_argument("--window", default="")
         p.add_argument("--pane", default="")
         if name == "diff":
             p.add_argument("--directory", default="", help="Git checkout to show (default: terminal cwd)")
-        if name in ("sessions", "help", "new-project", "history"):
+        if name in ("sessions", "help", "new-project", "history", "attention"):
             p.add_argument("--client", default="")
         if name == 'history':
             p.add_argument('--list', action='store_true', help='Print saved conversation metadata as JSON')
+        if name == 'attention':
+            p.add_argument('--list',action='store_true')
+            p.add_argument('--next',action='store_true')
+    visit=sub.add_parser('visit',help=argparse.SUPPRESS)
+    visit.add_argument('--pane',required=True)
+    visit.add_argument('--generation',required=True)
+    visit.add_argument('--client',default='')
     resume = sub.add_parser('resume', help='Open a live or saved conversation from history')
     resume.add_argument('record')
     resume.add_argument('--client', default='')
@@ -1580,7 +1630,7 @@ def main(argv=None):
     rn.add_argument("--reset", action="store_true", help="restore automatic conversation title")
     rn.add_argument("name", nargs="?")
     popup = sub.add_parser("popup", help=argparse.SUPPRESS)
-    popup.add_argument("--kind", choices=("sessions", "help", "new-project", "history"), required=True)
+    popup.add_argument("--kind", choices=("sessions", "help", "new-project", "history", "attention"), required=True)
     popup.add_argument("--client", required=True)
     popup.add_argument("--window", default="")
     dv = sub.add_parser("diff-view", help=argparse.SUPPRESS)
@@ -1636,6 +1686,12 @@ def main(argv=None):
     elif args.command == "menu":
         do_menu(P(args), getattr(args, "window", ""),
                 getattr(args, "pane", ""))
+    elif args.command == 'visit':
+        rc,error=visit_agent(P(args),args.pane,args.generation,args.client)
+        if error: print(error,file=sys.stderr)
+        sys.exit(rc)
+    elif args.command == 'attention':
+        sys.exit(cmd_attention(args) or 0)
     elif args.command == 'resume':
         sys.exit(cmd_resume(args) or 0)
     elif args.command == 'history' and args.list:

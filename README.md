@@ -16,6 +16,8 @@ The session label and clock stay hidden. Uninstall restores the previous bar.
 | Ctrl-b, S | Hide/show the sidebar in this window |
 | Ctrl-b, ? | Open the shortcut reference popup |
 | Ctrl-b, H / h in sidebar | Search conversation history; open or resume |
+| Ctrl-b, I / i in sidebar | Open the attention inbox across projects |
+| Ctrl-b, N | Visit the next agent needing attention |
 | Ctrl-b, a | Open the new-agent menu |
 | Ctrl-b, v | Toggle the right-hand diff pane |
 | Click a top tab / Ctrl-b, n or p | Switch windows, including shells and editors |
@@ -42,6 +44,17 @@ not visited. Visiting the real terminal in an attached client marks it read;
 hovering, previewing a project, and detached active panes do not. The same
 notice stays read across polls; a later turn can become unread again. Tracking
 starts when this version runs and does not reconstruct conversation history.
+
+### Attention inbox
+
+**Ctrl-b, I** (or **i** in the sidebar) lists live agents needing approval,
+asking a question or carrying an unread result, across all projects. Approvals
+come first, then questions/input requests, then other unread results. Search by
+title, provider, project or attention type. Enter visits the exact agent pane,
+including splits. **Ctrl-b, N** cycles through agents needing attention without
+opening the popup. Opening/searching the inbox does not mark items read; the
+normal real-terminal visit does. Resolved requests disappear on refresh.
+An exited or replaced agent is rejected rather than opening an unrelated pane.
 
 ### Conversation history
 

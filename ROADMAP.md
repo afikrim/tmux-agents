@@ -4,8 +4,8 @@ Implement and verify each milestone independently, with a separate commit.
 
 1. **Implemented:** Conversation history and resume — searchable metadata by project/provider;
    jump to a verified live pane or resume the exact saved provider conversation.
-2. **Next:** Attention inbox — questions, approvals and unread completions across projects.
-3. Optional Git worktree per new agent — separate branch and checkout per task.
+2. **Implemented:** Attention inbox — questions, approvals and unread completions across projects.
+3. **Next:** Optional Git worktree per new agent — separate branch and checkout per task.
 4. Integration health — hook connectivity, last event and unknown-status reasons.
 5. Project defaults — provider, directory, launch arguments and worktree preference.
 6. Optional desktop notifications — return to the exact agent needing attention.

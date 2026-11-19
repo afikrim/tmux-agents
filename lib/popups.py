@@ -8,10 +8,12 @@ import termios
 import time
 import tty
 
-from . import theme, ui, history
+from . import theme, ui, history, inbox
 from .tmuxutil import cli_socket_flags, run_tmux, state_root
 
 SHORTCUTS = [
+    ('Prefix I / i in sidebar', 'Inbox / Questions, approvals and unread results'),
+    ('Prefix N', 'Inbox / Jump to the next agent needing attention'),
     ('Prefix H / h in sidebar', 'History / Search and resume conversations'),
     ('Prefix s', 'Global / Search and switch projects'),
     ('Prefix ?', 'Global / Open shortcut help'),
@@ -69,7 +71,7 @@ def open_popup(prefix, paths, kind='help', client='', window=''):
     # ensure lock is held, and no real pane is created or replaced.
     result = subprocess.run(['tmux', *prefix, 'display-popup', '-E', '-c', client,
         '-w', str(width), '-h', str(height), '-x', 'C', '-y', 'C', '-b', 'rounded',
-        '-T', ' New project ' if kind == 'new-project' else ' History ' if kind == 'history' else ' Projects ' if kind == 'sessions' else ' Shortcuts ',
+        '-T', ' Attention ' if kind == 'attention' else ' New project ' if kind == 'new-project' else ' History ' if kind == 'history' else ' Projects ' if kind == 'sessions' else ' Shortcuts ',
         '-s', 'fg=%s,bg=%s' % (theme.PALETTE['fg'], theme.PALETTE['bg']),
         '-S', 'fg=%s,bg=%s' % (theme.PALETTE['accent'], theme.PALETTE['bg']), command],
         capture_output=True, text=True)
@@ -79,6 +81,8 @@ def open_popup(prefix, paths, kind='help', client='', window=''):
 
 
 def entries(sessions, kind, query, current=''):
+    if kind == 'attention':
+        return inbox.entries(sessions,query)
     if kind == 'history':
         return history.entries(query)
     if kind == 'help':
@@ -101,9 +105,9 @@ def entries(sessions, kind, query, current=''):
 
 def frame(rows, kind, query, cursor, top, width, height, error=''):
     width, height = max(1, width), max(1, height)
-    title = 'Conversation history — Enter to open / resume' if kind == 'history' else 'Switch project' if kind == 'sessions' else 'Keyboard shortcuts'
+    title = 'Attention inbox — Enter to visit agent' if kind == 'attention' else 'Conversation history — Enter to open / resume' if kind == 'history' else 'Switch project' if kind == 'sessions' else 'Keyboard shortcuts'
     lines = [ui.styled(' ' + title, width, 'accent', bold=True),
-             ui.styled(' Search: ' + (query or ('titles, projects, providers…' if kind == 'history' else 'projects…' if kind == 'sessions' else 'shortcuts…')), width,
+             ui.styled(' Search: ' + (query or ('titles, projects, providers…' if kind in ('history','attention') else 'projects…' if kind == 'sessions' else 'shortcuts…')), width,
                        'fg' if query else 'muted', 'panel'),
              ui.styled(' ' + (error or '─' * max(0, width - 2)), width, 'rose' if error else 'line')]
     count = max(0, (height - len(lines)) // 2)
@@ -125,7 +129,7 @@ def frame(rows, kind, query, cursor, top, width, height, error=''):
         lines.append(ui.styled(text, width, 'accent' if row.get('current') else 'fg', background, True))
         lines.append(ui.styled('   ' + row['detail'], width, 'muted', background))
     if not rows and len(lines) < height:
-        lines.append(ui.styled(' No saved conversations yet; waiting for native hooks' if kind == 'history' and not query else ' No matching conversations' if kind == 'history' else ' No matching projects' if kind == 'sessions' else ' No matching shortcuts', width, 'muted'))
+        lines.append(ui.styled(' No agents need attention' if kind == 'attention' else ' No saved conversations yet; waiting for native hooks' if kind == 'history' and not query else ' No matching conversations' if kind == 'history' else ' No matching projects' if kind == 'sessions' else ' No matching shortcuts', width, 'muted'))
     lines.extend(ui.styled('', width) for _ in range(max(0, height - len(lines))))
     return lines[:height], top, hits
 
@@ -141,7 +145,7 @@ def run(prefix, paths, kind, client, build_sessions):
         while True:
             if time.monotonic() >= refresh:
                 selected = rows[cursor]['id'] if rows else None
-                if kind == 'sessions':
+                if kind in ('sessions','attention'):
                     sessions = build_sessions(prefix, paths)
                     current = run_tmux(prefix, 'display-message', '-p', '-c', client, '#{session_id}')[1].strip()
                 rows = entries(sessions, kind, query, current)
@@ -176,10 +180,12 @@ def run(prefix, paths, kind, client, build_sessions):
                 elif key in ('backspace', '\x15') or (isinstance(key, str) and len(key) == 1 and key.isprintable()):
                     query = '' if key == '\x15' else query[:-1] if key == 'backspace' else (query + key)[:120]
                     rows, cursor, top, error = entries(sessions, kind, query, current), 0, 0, ''
-                if activate and kind == 'history' and rows:
+                if activate and kind in ('history','attention') and rows:
                     script = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'bin', 'tmux-agents')
+                    command = (['resume',rows[cursor]['id']] if kind=='history' else
+                               ['visit','--pane',rows[cursor]['id'],'--generation',rows[cursor]['generation']])
                     result = subprocess.run([sys.executable, script, *cli_socket_flags(prefix),
-                        'resume', rows[cursor]['id'], '--client', client], capture_output=True, text=True)
+                        *command, '--client', client], capture_output=True, text=True)
                     if result.returncode == 0:
                         return
                     error, refresh = ui.san(result.stderr or result.stdout, 0).strip()[:160], 0

@@ -79,6 +79,11 @@ pausing at both ends. Side-panel focus preserves the selected terminal title.
 Navigation uses text. The user-requested sleeping kaomoji `(－ω－) zzZ` identifies idle captions.
 
 ## Components
+The attention inbox reuses searchable popup rows across projects. Approvals
+precede questions/input requests, followed by unread results. Merely opening or
+searching the inbox never acknowledges a result. Navigation validates the live
+agent generation before switching to its exact pane; stale entries fail safely.
+
 Conversation history uses the existing popup geometry and search controls.
 Entries show a conversation title, provider, project and last-seen date.
 Enter visits a verified live pane or resumes the exact provider conversation;
