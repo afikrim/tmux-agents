@@ -136,6 +136,41 @@ class WindowTabsTest(unittest.TestCase):
         self.assertIn('Hi #[fg=red] #{x}',self.output)
         self.assertNotIn('##[fg=red]',self.output)
 
+    def test_mouse_resize_is_remembered_clamped_and_tabs_stay_aligned(self):
+        import json
+        command=[sys.executable,str(ROOT/'bin/tmux-agents'),'--socket-path',self.prefix[1]]
+        # Attaching a real terminal changes usable height by the status row.
+        # Establish that geometry before simulating a deliberate mouse resize.
+        subprocess.run(command+['ensure'],env=self.env,check=True,timeout=10)
+        subprocess.run(command+['daemon-start'],env=self.env,check=True,timeout=10)
+        try:
+            # Border coordinates are one-based, including the top tab strip.
+            for packet in (b'\x1b[<0;33;10M',b'\x1b[<32;34;10M',b'\x1b[<32;45;10M',b'\x1b[<0;45;10m'):
+                os.write(self.master,packet); self.drain(.1)
+            deadline=time.monotonic()+7
+            while time.monotonic()<deadline:
+                self.drain(.15)
+                result=subprocess.run(command+['sidebar-width','--json'],env=self.env,
+                                      capture_output=True,text=True,timeout=10)
+                if json.loads(result.stdout)['width']==44:break
+            self.assertEqual(json.loads(result.stdout)['width'],44)
+            self.assertEqual(self.padding(),45)
+            self.click(45+24+1+3)  # daemon-generated labels are fixed-width
+            self.assertEqual(self.current(),'1')
+            self.assertEqual(self.padding(),45)
+            for packet in (b'\x1b[<0;45;10M',b'\x1b[<32;44;10M',b'\x1b[<32;13;10M',b'\x1b[<0;13;10m'):
+                os.write(self.master,packet); self.drain(.1)
+            deadline=time.monotonic()+7
+            while time.monotonic()<deadline:
+                self.drain(.15)
+                result=subprocess.run(command+['sidebar-width','--json'],env=self.env,
+                                      capture_output=True,text=True,timeout=10)
+                if json.loads(result.stdout)['width']==24 and self.padding()==25:break
+            self.assertEqual(json.loads(result.stdout)['width'],24)
+            self.assertEqual(self.padding(),25)
+        finally:
+            subprocess.run(command+['daemon-stop'],env=self.env,timeout=10,stdout=subprocess.DEVNULL)
+
     def test_focused_tab_scrolls_and_inactive_tab_stays_still(self):
         import runpy
         module=runpy.run_path(str(ROOT/'bin/tmux-agents'))

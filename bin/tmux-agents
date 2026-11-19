@@ -20,13 +20,11 @@ import time
 
 BASE = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.insert(0, BASE)
-from lib import adapters, detect, status as st, store, ui, theme, activity, history, defaults  # noqa: E402
+from lib import adapters, detect, status as st, store, ui, theme, activity, history, defaults, sidebar_layout  # noqa: E402
 from lib.tmuxutil import (cli_socket_flags, resolve_socket,
                           socket_id_of, state_paths, state_root,  # noqa: E402
                           run_tmux, tmux_lines)
 
-SIDEBAR_WIDTH = 32
-MIN_WINDOW_WIDTH = 72
 POLL_INTERVAL = 2.0
 # Seconds a live agent keeps reading running/inferred after its last observed
 # screen change before decaying to unknown. Exit supersedes immediately.
@@ -55,7 +53,8 @@ def list_all(prefix):
     fmt = ("#{session_id}\t#{session_name}\t#{window_id}\t#{window_index}\t"
            "#{window_name}\t#{pane_id}\t#{pane_pid}\t#{pane_active}\t"
            "#{window_active}\t#{window_width}\t#{pane_current_path}\t"
-           "#{window_flags}\t#{@tmux_agents_sidebar}\t#{@tmux_agents_name}\t#{pane_current_command}\t#{@tmux_agents_diff}\t#{@tmux_agents_conversation}\t#{pane_title}")
+           "#{window_flags}\t#{@tmux_agents_sidebar}\t#{@tmux_agents_name}\t#{pane_current_command}\t#{@tmux_agents_diff}\t#{@tmux_agents_conversation}\t"
+           "#{pane_width}\t#{pane_height}\t#{pane_left}\t#{pane_top}\t#{window_height}\t#{window_zoomed_flag}\t#{pane_title}")
     panes = []
     for line in tmux_lines(prefix, "list-panes", "-a", "-F", fmt):
         parts = line.split("\t")
@@ -69,6 +68,9 @@ def list_all(prefix):
             width = int(parts[9])
         except ValueError:
             width = 0
+        def number(index):
+            try: return int(parts[index])
+            except (IndexError,ValueError): return 0
         panes.append({"session_id": parts[0], "session": parts[1],
                       "window_id": parts[2], "window_index": parts[3],
                       "window_name": parts[4], "pane_id": parts[5], "pid": pid,
@@ -79,7 +81,9 @@ def list_all(prefix):
                       "program": parts[14] if len(parts) > 14 else "",
                       "diff": len(parts) > 15 and parts[15] == "1",
                       "conversation": parts[16] if len(parts) > 16 else "",
-                      "title": "\t".join(parts[17:]) if len(parts) > 17 else ""})
+                      'width':number(17), 'height':number(18), 'left':number(19),
+                      'top':number(20), 'win_height':number(21), 'zoomed':number(22)==1,
+                      "title": "\t".join(parts[23:]) if len(parts) > 23 else ""})
     return panes
 
 
@@ -499,16 +503,14 @@ def ensure_sidebars(prefix, paths):
         os.close(lock)
 
 
-def _ensure_locked(prefix, paths):
+def _ensure_locked(prefix, paths, learn_width=True):
     panes = list_all(prefix)
     table = detect.process_table()
-    by_win = {}
-    for p in panes:
-        key = (p["session_id"], p["window_id"])
-        info = by_win.setdefault(key, {"spec": p["window_id"],
-                                       "width": p["win_width"],
-                                       "path": p["path"], "panes": []})
-        info["panes"].append(p)
+    by_win = sidebar_layout.group(panes)
+    server = run_tmux(prefix,'display-message','-p','#{pid}')[1].strip()
+    attached = set(tmux_lines(prefix,'list-clients','-F','#{window_id}'))
+    settings = (sidebar_layout.prepare(paths,by_win,server,attached) if learn_width
+                else sidebar_layout.preferences(paths))
     for key, info in by_win.items():
         # A sidebar must not keep an otherwise closed agent window alive.
         # Destructive cleanup trusts explicit pane ownership tags, never
@@ -526,11 +528,25 @@ def _ensure_locked(prefix, paths):
                                   info["spec"], "@tmux_agents_hidden")
         if rc == 0 and hidden.strip() == "1":
             continue  # genuine persistent toggle: daemon never recreates
-        if info["width"] and info["width"] < MIN_WINDOW_WIDTH:
-            # Narrow: collapse an existing oversized sidebar, restore later.
+        if any(p.get('zoomed') for p in info['panes']):
+            continue  # do not resize, unzoom or learn a zoomed pane's width
+        width = sidebar_layout.available_target(info,settings)
+        if width is None:
+            # Leave enough space for the main content and the optional diff.
             for p in info["panes"]:
-                if (p.get("sidebar") or (p["pid"] and detect.is_sidebar_tree(p["pid"], table))):
-                    run_tmux(prefix, "kill-pane", "-t", p["pane_id"])
+                if p.get('sidebar'):
+                    rc,tag,_=run_tmux(prefix,'show-options','-pqv','-t',p['pane_id'],'@tmux_agents_sidebar')
+                    if rc==0 and tag.strip()=='1':
+                        run_tmux(prefix, "kill-pane", "-t", p["pane_id"])
+            continue
+        owned = [p for p in info['panes'] if p.get('sidebar')]
+        if owned:
+            for p in owned:
+                if p.get('width') != width:
+                    rc,tag,_=run_tmux(prefix,'show-options','-pqv','-t',p['pane_id'],'@tmux_agents_sidebar')
+                    if rc==0 and tag.strip()=='1':
+                        rc,_,_=run_tmux(prefix,'resize-pane','-t',p['pane_id'],'-x',str(width))
+                        if rc==0: p['width']=width
             continue
         if any((p.get("sidebar") or (p["pid"] and detect.is_sidebar_tree(p["pid"], table)))
                for p in info["panes"]):
@@ -546,7 +562,7 @@ def _ensure_locked(prefix, paths):
         from lib.tmuxutil import state_root
         command = ["env", "TMUX_AGENTS_STATE_DIR=" + state_root(), "TMUX_AGENTS_SIDEBAR=1",
                    sys.executable, script, *cli_socket_flags(prefix), "sidebar"]
-        rc, out, err = run_tmux(prefix, "split-window", "-fhbl", str(SIDEBAR_WIDTH),
+        rc, out, err = run_tmux(prefix, "split-window", "-fhbl", str(width),
                                "-d", "-t", info["spec"], "-c", info["path"] or os.path.expanduser("~"),
                                "-P", "-F", "#{pane_id}", *command)
         if rc != 0:
@@ -556,6 +572,7 @@ def _ensure_locked(prefix, paths):
             run_tmux(prefix, "set-option", "-p", "-t", newpane,
                      "@tmux_agents_sidebar", "1")
             run_tmux(prefix, "select-pane", "-T", "agents", "-t", newpane)
+    sidebar_layout.remember(paths,list_all(prefix),server,settings,observed=by_win)
 
 
 def _current_window_id(prefix, explicit=""):
@@ -612,6 +629,41 @@ def cmd_toggle(args):
             if p["window_id"] == cur:
                 run_tmux(prefix, "kill-pane", "-t", p["pane_id"])
         print("hidden")
+
+
+def cmd_sidebar_width(args):
+    prefix=P(args); paths=state_paths(prefix)
+    if run_tmux(prefix,'display-message','-p','#{pid}')[0]:
+        print('Start or select a tmux server before setting sidebar width.',file=sys.stderr)
+        return 1
+    store.ensure_dir(paths['dir'])
+    lock=os.open(paths['ensure_lock'],os.O_CREAT|os.O_RDWR,0o600)
+    try:
+        fcntl.flock(lock,fcntl.LOCK_EX)
+        settings=sidebar_layout.preferences(paths)
+        changing=args.width is not None or args.min_width is not None or args.reset
+        if args.reset:
+            if args.width is not None or args.min_width is not None:
+                raise ValueError('Use --reset separately from width settings')
+            settings=dict(sidebar_layout.DEFAULTS)
+        else:
+            if args.min_width is not None:
+                settings['min_width']=args.min_width
+                if args.width is None: settings['width']=max(settings['width'],args.min_width)
+            if args.width is not None: settings['width']=args.width
+        settings=sidebar_layout.validate(settings)
+        if changing:
+            sidebar_layout.save(paths,settings)
+            if not os.path.exists(os.path.join(paths['dir'],'disabled')):
+                _ensure_locked(prefix,paths,learn_width=False)
+        if args.json: print(json.dumps(settings,indent=2))
+        else: print('Sidebar: preferred %d columns, minimum %d columns.' %
+                    (settings['width'],settings['min_width']))
+    except (OSError,ValueError) as error:
+        print(str(error),file=sys.stderr)
+        return 1
+    finally: os.close(lock)
+    return 0
 
 
 def cmd_focus(args):
@@ -805,8 +857,9 @@ def cmd_sidebar(args):
                              ui.cell_width(current.get("name", "")) > name_space)
             scrolling = scrolling or bool(hover_key and ui.cell_width(hovered.get("name", "")) >
                                           ui.row_name_width(hovered, winsize[0]))
+            frame_size=tuple(winsize)
             lines, top, header_height, body_height, hit_rows = ui.frame(
-                rows, sessions, cursor, top, winsize[0], winsize[1], focused,
+                rows, sessions, cursor, top, frame_size[0], frame_size[1], focused,
                 _t.monotonic() - scroll_since, return_hits=True,
                 hover_ref=hover_ref, hover_elapsed=_t.monotonic() - hover_since)
             last_redraw_rows = rows
@@ -842,6 +895,8 @@ def cmd_sidebar(args):
                     break
                 keys = decoder.feed(data)
             for key in keys:
+                if isinstance(key,tuple) and frame_size != tuple(winsize):
+                    continue  # the hit map belongs to the frame before resize
                 if isinstance(key, tuple) and key[1] & 32:
                     if not editing:
                         hover_ref = ui.hover_target(last_redraw_rows, hit_rows, winsize[0], key)
@@ -1120,8 +1175,11 @@ def cmd_diff(args, prefix=None):
         fcntl.flock(lock, fcntl.LOCK_EX)
         if os.path.exists(os.path.join(paths["dir"], "disabled")):
             return 1
-        return diffpane.toggle(prefix, paths, list_all(prefix), args.pane, args.window,
+        _ensure_locked(prefix,paths)  # record a preceding deliberate resize
+        result=diffpane.toggle(prefix, paths, list_all(prefix), args.pane, args.window,
                                getattr(args, "directory", ""))
+        _ensure_locked(prefix,paths)  # diff splits must not reset the preference
+        return result
     except Exception as error:
         run_tmux(prefix, "display-message", "Cannot open diff: " + ui.san(str(error), 0))
         return 1
@@ -1873,6 +1931,11 @@ def main(argv=None):
     d = sub.add_parser("daemon"); d.add_argument("--once", action="store_true")
     sub.add_parser("daemon-start"); sub.add_parser("daemon-stop")
     sub.add_parser("sidebar"); sub.add_parser("ensure")
+    sw=sub.add_parser('sidebar-width',help='Show or set the remembered sidebar width')
+    sw.add_argument('width',nargs='?',type=int)
+    sw.add_argument('--min-width',type=int,default=None)
+    sw.add_argument('--reset',action='store_true')
+    sw.add_argument('--json',action='store_true')
     h = sub.add_parser("hide"); h.add_argument("--all-windows", action="store_true")
     h.add_argument("--window", default="")
     for name in ("toggle", "focus", "menu", "diff", "sessions", "help", "new-project", "history", "attention"):
@@ -1983,6 +2046,8 @@ def main(argv=None):
         cmd_sidebar(args)
     elif args.command == "ensure":
         ensure_sidebars(P(args), paths_of(args))
+    elif args.command == 'sidebar-width':
+        sys.exit(cmd_sidebar_width(args) or 0)
     elif args.command == "hide":
         cmd_hide(args)
     elif args.command == "toggle":

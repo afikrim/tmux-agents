@@ -56,6 +56,34 @@ opening the popup. Opening/searching the inbox does not mark items read; the
 normal real-terminal visit does. Resolved requests disappear on refresh.
 An exited or replaced agent is rejected rather than opening an unrelated pane.
 
+### Sidebar sizing
+
+Drag the sidebar divider with the mouse or use tmux's normal pane-resize keys.
+The sidebar remembers your preferred width across windows and projects on the
+same tmux server, including restarts. It starts at **32 columns** with a
+**24-column minimum**. Resizing is reconciled by the daemon (normally within
+two seconds); a drag below the minimum snaps back to that minimum.
+
+```sh
+tmux-agents sidebar-width                 # show current preferences
+tmux-agents sidebar-width 44              # set preferred width
+tmux-agents sidebar-width --min-width 28  # change the minimum
+tmux-agents sidebar-width --reset         # restore 32 / 24 defaults
+```
+
+Settings accept 16–160 columns; the preferred width must be at least the
+minimum. Raising the minimum also raises a smaller existing preference.
+An explicit width change applies to existing sidebars immediately. Preferences
+are private in `sidebar-layout.json` under the server's state directory.
+
+When the terminal shrinks, the sidebar temporarily narrows while preserving
+at least 39 columns for main content, accounting for the optional diff pane.
+It collapses when its minimum will not fit, or below 72 window columns, then
+returns at the preferred width when space allows. Automatic resizing, diff
+splits and zoom never replace your saved preference. A deliberately hidden
+sidebar stays hidden. The Agents section retains the bottom third, and tab
+insets and mouse hit regions follow the actual sidebar size.
+
 ### Desktop notifications (opt-in, off by default)
 
 No desktop alerts are sent unless you opt in per tmux server. When enabled,

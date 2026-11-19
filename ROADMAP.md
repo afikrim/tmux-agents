@@ -13,9 +13,14 @@ Implement and verify each milestone independently, with a separate commit.
 
 ## Resizing
 
-Add a configurable sidebar minimum width (proposed default: 24 terminal cells),
-with the current 32-cell default width. Clamp manual resizing to the minimum
-while leaving enough room for the main terminal. Preserve the user's preferred
-width across window changes, collapse safely on narrow terminals, and keep tab
-insets, text clipping, hover and mouse hit targets aligned after every resize.
-The Agents section should continue reserving the bottom third of the sidebar.
+**Implemented:** Configurable sidebar minimum (24 columns), preferred width
+(32 by default), and private per-server persistence. Manual resizing is
+clamped on the daemon's reconciliation pass; automatic narrowing/collapse,
+diff panes and zoom preserve the preferred width. Main content retains at
+least 39 columns. Native tab insets and mouse maps track actual geometry;
+the Agents section keeps its bottom third.
+
+## Action details
+
+**Next:** Show native tool targets in agent captions, such as Editing app.py
+and Reading README.md, with generic fallback when no safe target is available.

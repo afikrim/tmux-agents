@@ -8,7 +8,7 @@ import threading
 import time
 import tty
 
-from . import changes, detect, ui
+from . import changes, detect, ui, sidebar_layout
 from .tmuxutil import cli_socket_flags, run_tmux, state_root
 
 
@@ -55,7 +55,7 @@ def toggle(prefix, paths, panes, target='', window='', directory=''):
     command = ['env', 'TMUX_AGENTS_STATE_DIR=' + state_root(), sys.executable,
                script, *cli_socket_flags(prefix), 'diff-view', '--target', chosen['pane_id']]
     rc, pane, error = run_tmux(prefix, 'split-window', '-fh', '-d', '-t', chosen['pane_id'],
-                              '-l', str(min(64, max(40, (width - 32) // 2))),
+                              '-l', str(min(64, max(40, (width - sidebar_layout.preferences(paths)['width']) // 2))),
                               '-c', chosen['path'], '-P', '-F', '#{pane_id}', *command)
     if rc:
         run_tmux(prefix, 'display-message', 'Cannot open diff: ' + ui.san(error, 0))
@@ -64,9 +64,6 @@ def toggle(prefix, paths, panes, target='', window='', directory=''):
     run_tmux(prefix, 'set-option', '-p', '-t', pane, '@tmux_agents_diff', '1')
     run_tmux(prefix, 'set-option', '-p', '-t', pane, '@tmux_agents_diff_target', chosen['pane_id'])
     run_tmux(prefix, 'set-option', '-p', '-t', chosen['pane_id'], '@tmux_agents_diff_tracking', '1')
-    for left in group:
-        if left.get('sidebar'):
-            run_tmux(prefix, 'resize-pane', '-t', left['pane_id'], '-x', '32')
     return 0
 
 

@@ -50,6 +50,7 @@ SHORTCUTS = [
     ('Prefix d', 'tmux / Detach the client'),
     ('notify --enable', 'Global / Opt in to desktop alerts for attention'),
     ('notify --list / --open', 'Global / List recent alerts and return to one'),
+    ('sidebar-width [columns]', 'Layout / Remember sidebar width; --min-width sets the minimum'),
 ]
 
 

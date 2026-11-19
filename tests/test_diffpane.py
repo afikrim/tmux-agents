@@ -93,6 +93,16 @@ class DiffPaneTest(unittest.TestCase):
         self.assertEqual(self.toggle(), 0)
         self.assertFalse(self.viewer())
 
+    def test_diff_toggle_preserves_custom_sidebar_width(self):
+        from lib import sidebar_layout
+        subprocess.run([sys.executable,str(ROOT/'bin/tmux-agents'),'--socket-path',self.prefix[1],
+                        'sidebar-width','44'],check=True,capture_output=True,text=True,timeout=15)
+        self.assertEqual(self.toggle(),0)
+        self.assertEqual(next(p['width'] for p in ta.list_all(self.prefix) if p.get('sidebar')),44)
+        self.assertEqual(sidebar_layout.preferences(self.paths)['width'],44)
+        self.assertEqual(self.toggle(),0)
+        self.assertEqual(next(p['width'] for p in ta.list_all(self.prefix) if p.get('sidebar')),44)
+
     def test_native_turn_checkpoint_is_opt_in_and_excludes_earlier_changes(self):
         def hook():
             env = dict(os.environ, TMUX=self.prefix[1] + ',1,0', TMUX_PANE=self.target)

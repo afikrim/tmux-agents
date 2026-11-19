@@ -133,6 +133,13 @@ class SidebarPTYTest(unittest.TestCase):
             proc.kill()
             proc.wait(timeout=5)
 
+    def initial_frame(self,master):
+        output=b''; deadline=time.monotonic()+5
+        while time.monotonic()<deadline:
+            output+=drain(master,.25)
+            if len(visible_pane_rows(output))>=2:return output
+        self.fail('Sidebar did not render its initial agent rows')
+
     def test_q_returns_focus_keeps_sidebar_alive(self):
         proc, master = self.spawn_sidebar()
         try:
@@ -184,7 +191,7 @@ class SidebarPTYTest(unittest.TestCase):
     def test_down_moves_from_session_directly_to_agent(self):
         proc, master = self.spawn_sidebar()
         try:
-            out = drain(master, 2.5)
+            out = self.initial_frame(master)
             panes = visible_pane_rows(out)
             self.assertGreaterEqual(len(panes), 2)
             # Keep window-name rows visible, but one down movement from the
@@ -199,7 +206,7 @@ class SidebarPTYTest(unittest.TestCase):
     def test_mouse_click_activates_exact_row(self):
         proc, master = self.spawn_sidebar()
         try:
-            out = drain(master, 2.5)
+            out = self.initial_frame(master)
             rows = visible_rows(out)
             panes = [(y, ref) for y, kind, ref in rows if kind == "pane"]
             self.assertGreaterEqual(len(panes), 2, rows)
@@ -216,7 +223,7 @@ class SidebarPTYTest(unittest.TestCase):
     def test_rename_conversation_save_cancel_and_reset(self):
         proc, master = self.spawn_sidebar()
         try:
-            out = drain(master, 2.5)
+            out = self.initial_frame(master)
             pane = visible_pane_rows(out)[0]
             os.write(master, b"gjr\x15Fix login flow\r")
             drain(master, 1.0)

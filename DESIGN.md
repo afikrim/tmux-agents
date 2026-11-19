@@ -79,6 +79,14 @@ pausing at both ends. Side-panel focus preserves the selected terminal title.
 Navigation uses text. The user-requested sleeping kaomoji `(－ω－) zzZ` identifies idle captions.
 
 ## Components
+Sidebar sizing has a shared per-server preference (32 columns by default),
+with a configurable minimum (24 by default). Geometry observations identify
+deliberate divider changes separately from terminal, zoom and topology changes.
+Available space accounts for the diff pane and preserves 39 main-content
+columns. Automatic narrowing/collapse keeps the preference for restoration;
+hidden windows stay hidden. Native tabs use actual pane geometry, and sidebar
+mouse packets from a superseded frame are ignored after resize.
+
 Project defaults are an explicit popup editor, separate from one-off agent
 creation. The agent menu previews the preferred provider/worktree choice and
 offers a direct launch. Provider arguments are scoped to the preferred provider;
