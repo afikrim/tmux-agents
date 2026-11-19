@@ -262,6 +262,34 @@ class PopupTTYTest(unittest.TestCase):
         self.assertEqual(self.t('list-panes','-a','-F','#{pane_id}|#{pane_pid}').stdout, before)
         self.assertEqual(self.t('display-message','-p','-c',self.name,'#{pane_id}').stdout.strip(), main)
 
+    def test_project_click_leaves_destination_sidebar_for_last_terminal(self):
+        self.t('set-option','-g','mouse','on')
+        main=self.t('display-message','-p','-t','beta search','#{pane_id}').stdout.strip()
+        last=self.t('split-window','-d','-t',main,'-P','-F','#{pane_id}','sleep','60').stdout.strip()
+        subprocess.run([sys.executable,str(ROOT/'bin/tmux-agents'),'--socket-path',self.prefix[1],
+                        'ensure'],env=self.env,check=True,timeout=20,stdout=subprocess.DEVNULL)
+        def sidebar(session):
+            return next(line.split('|')[0] for line in self.t('list-panes','-t',session,'-F',
+                '#{pane_id}|#{@tmux_agents_sidebar}').stdout.splitlines() if line.endswith('|1'))
+        source,destination=sidebar('alpha'),sidebar('beta search')
+        self.t('set-window-option','-t',last,'@tmux_agents_tab_pane',last)
+        self.t('select-pane','-t',destination)
+        self.t('select-pane','-t',source)
+        self.drain(.8)
+        capture=self.t('capture-pane','-p','-t',source).stdout
+        y=next(i for i,line in enumerate(capture.splitlines(),1) if 'beta search' in line)
+        top=int(self.t('display-message','-p','-t',source,'#{pane_top}').stdout.strip())
+        before=self.t('list-panes','-a','-F','#{pane_id}|#{pane_pid}').stdout
+        os.write(self.master,('\x1b[<0;5;%dM\x1b[<0;5;%dm'%(top+y,top+y)).encode())
+        deadline=time.monotonic()+4
+        while time.monotonic()<deadline:
+            self.drain(.15)
+            selected=self.t('display-message','-p','-c',self.name,'#{pane_id}').stdout.strip()
+            if selected==last: break
+        self.assertEqual(selected,last)
+        self.assertEqual(self.t('display-message','-p','-c',self.name,'#{session_name}').stdout.strip(),'beta search')
+        self.assertEqual(before,self.t('list-panes','-a','-F','#{pane_id}|#{pane_pid}').stdout)
+
     def test_project_unread_click_visits_and_acknowledges_exact_agent(self):
         agent=Path(self.temp.name)/'codex'
         agent.write_text('#!/bin/sh\nwhile true; do sleep 1; done\n')

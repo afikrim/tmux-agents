@@ -50,8 +50,10 @@ unknown status. No prompts, command arguments, tool output, or chat text are
 stored for these captions. Existing OpenCode sessions need a restart to load
 the expanded tool-event bridge; their lifecycle status captions still work.
 
-Moving through projects previews only that project's agents; Enter switches
-to the project. Each pane hosting Codex, Claude, or OpenCode gets its own
+Moving through projects previews only that project's agents; Enter or clicking
+switches to the project and focuses its main terminal, even if its sidebar was
+previously focused. The active-project highlight stays on the current session;
+hover highlights other projects temporarily. Each pane hosting Codex, Claude, or OpenCode gets its own
 entry, including multiple agents split inside one window. Plain shell/editor
 panes are omitted. Agent entries have a blank row between them; click or Enter
 selects the exact agent pane. The top tabs include all windows, including

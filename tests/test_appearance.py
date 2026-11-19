@@ -116,6 +116,20 @@ class AppearanceTest(unittest.TestCase):
         self.assertIn(theme.bg('panel'), active)
         self.assertIn(theme.bg('selected'), ui.row_line(row, True, 32, True, hovered=True))
 
+    def test_project_highlight_tracks_current_session_not_keyboard_preview(self):
+        sessions=[{'id':'$1','name':'alpha','attached':True,'windows':[]},
+                  {'id':'$2','name':'beta','attached':False,'windows':[]}]
+        rows=ui.build_rows(sessions,'$2')
+        self.assertIn(theme.bg('selected'),ui.row_line(rows[0],False,32,True))
+        self.assertNotIn(theme.bg('selected'),ui.row_line(rows[1],True,32,True))
+        self.assertIn(theme.bg('hover'),ui.row_line(rows[1],True,32,True,hovered=True))
+        self.assertNotIn(theme.bg('hover'),ui.row_line(rows[1],True,32,True))
+        lines,_,_,_,hits=ui.frame(rows,sessions,1,0,32,30,return_hits=True)
+        for y,index in hits.items():
+            if rows[index]['kind']=='session':
+                expected='selected' if rows[index]['current'] else 'bg'
+                self.assertIn(theme.bg(expected),lines[y-1])
+
     def test_hover_hit_testing_rejects_drag_release_wheel_and_non_rows(self):
         rows = [{'kind':'session','ref':'$1'}, {'kind':'pane','ref':'%1'}]
         hits = {2:0, 20:1}

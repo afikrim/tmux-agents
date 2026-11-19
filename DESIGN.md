@@ -83,9 +83,12 @@ Project names identify sessions; counts below use ▶ running and ● idle,
 then a middle-dot separator and unread count only when nonzero.
 Unread counts are underlined when actionable and open the first unread terminal.
 Agent entries show conversation/program titles, right-aligned status, and a
-subordinate current-action caption. The current project is accented; keyboard
-selection gets the focused background. Agent titles scroll when focused and
-clipped. A project cursor previews that project's windows before activation.
+subordinate current-action caption. Only the current project gets the active
+background; project keyboard preview keeps a cursor marker, and hover is temporary.
+Agent keyboard selection gets the focused background. Agent titles scroll when focused and
+clipped. A project cursor previews that project's agents before activation.
+Project activation focuses a real terminal in its active window, remembering
+the last terminal when a side panel held focus.
 Shell/editor panes are excluded. Splits hosting separate agents each get an
 entry; counts use those same agent panes. New project + agent is a compact native
 popup that creates the session and its first agent window in one action.

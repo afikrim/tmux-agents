@@ -862,6 +862,8 @@ def activation_plan(row, origin_session="", client=""):
         if row.get("focus_pane"):
             cmds.append(["select-pane", "-t", row["focus_pane"]])
     else:
+        if row.get("focus_pane"):
+            cmds.append(["select-pane", "-t", row["focus_pane"]])
         if client:
             cmds.append(["switch-client", "-c", client, "-t", ref])
         else:
@@ -872,6 +874,18 @@ def activation_plan(row, origin_session="", client=""):
 
 
 def do_activate(prefix, paths, row, origin_session="", client=""):
+    if row.get("kind") == "session":
+        # A session remembers pane focus, including an infrastructure pane.
+        # Resolve its active window's real terminal before switching clients.
+        terminals = [p for p in list_all(prefix)
+                     if p["session_id"] == row["ref"] and p["win_active"]
+                     and not p.get("sidebar") and not p.get("diff")]
+        if terminals:
+            _, remembered, _ = run_tmux(prefix, "show-window-options", "-v", "-t",
+                                         terminals[0]["window_id"], "@tmux_agents_tab_pane")
+            pane = next((p for p in terminals if p["active"]),
+                        next((p for p in terminals if p["pane_id"] == remembered.strip()), terminals[0]))
+            row = dict(row, focus_pane=pane["pane_id"])
     if row.get("kind") == "pane":
         for pane in list_all(prefix):
             if pane.get("diff") and pane["window_id"] == row.get("win_id"):

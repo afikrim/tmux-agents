@@ -205,11 +205,17 @@ def row_name_width(row, width):
     return max(0, width - cell_width(tag.title() + source) - 7)
 
 
+def row_background(row, selected, focused, hovered=False):
+    if row["kind"] == "session":
+        return "selected" if row.get("current") else "hover" if hovered else "bg"
+    return ("selected" if selected and focused else "hover" if hovered
+            else "panel" if row.get("current") else "bg")
+
+
 def row_line(row, selected, width, focused=True, scroll_elapsed=0.0,
              hovered=False, hover_elapsed=0.0):
     kind = row["kind"]
-    background = ("selected" if selected and focused else "hover" if hovered
-                  else "panel" if row.get("current") else "bg")
+    background = row_background(row, selected, focused, hovered)
     marker = ">" if selected and (focused or row.get("current")) else " "
     def name_text(name):
         space = row_name_width(row, width)
@@ -350,8 +356,7 @@ def frame(rows, sessions, cursor, top, width, height, focused=True, scroll_elaps
         for position,index in enumerate(visible):
             hits[len(lines) + 1] = index
             row = rows[index]
-            background = ("selected" if index == cursor and focused else "hover" if row["ref"] == hover_ref
-                          else "panel" if row.get("current") else "bg")
+            background = row_background(row, index == cursor, focused, row["ref"] == hover_ref)
             add(row_line(rows[index], index == cursor, width, focused, scroll_elapsed,
                          rows[index]["ref"] == hover_ref, hover_elapsed))
             if stride >= 2:
