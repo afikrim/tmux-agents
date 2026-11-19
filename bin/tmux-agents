@@ -1127,8 +1127,9 @@ def cmd_launch(args, prefix=None):
                 print('Worktree retained for inspection: '+worktree['path']+' ('+worktree['branch']+')')
         return 1
     if project:
+        command_argv=['env','--',*argv] if len(argv)==1 else argv
         rc,out,err=run_tmux(prefix,'new-session','-d','-P','-F','#{session_id}',
-                            '-s',project,'-n',kind,'-c',cwd,*env_args,*argv)
+                            '-s',project,'-n',kind,'-c',cwd,*env_args,*command_argv)
         if rc:
             return launch_failed(err)
         client=getattr(args,'client','')
@@ -1139,8 +1140,10 @@ def cmd_launch(args, prefix=None):
                 return 1
         ensure_sidebars(prefix,state_paths(prefix))
         return 0
+    # tmux 3.3 treats one command argument as shell text, including spaces.
+    command_argv=['env','--',*argv] if len(argv)==1 else argv
     rc, _, err = run_tmux(prefix, "new-window", *dest, *env_args, "-n", kind,
-                           "-c", cwd, *argv)
+                           "-c", cwd, *command_argv)
     if rc != 0:
         return launch_failed(err)
     return 0

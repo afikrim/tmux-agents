@@ -155,8 +155,12 @@ class SidebarPTYTest(unittest.TestCase):
     def test_keyboard_G_enter_activates_exact_last_row(self):
         proc, master = self.spawn_sidebar()
         try:
-            out = drain(master, 2.5)
-            rows = visible_pane_rows(out)
+            # Startup escape sequences can arrive before the first frame,
+            # especially on Linux under load. Wait for actual navigable rows.
+            out, rows, deadline = b'', [], time.monotonic()+5
+            while len(rows)<2 and time.monotonic()<deadline:
+                out+=drain(master,.25)
+                rows=visible_pane_rows(out)
             self.assertGreaterEqual(len(rows), 2, rows)
             target = rows[-1]  # G jumps to the last row
             os.write(master, b"G")
