@@ -137,9 +137,55 @@ The same action is available from the CLI:
 tmux-agents launch --project my-project --directory ~/code/my-project codex
 ```
 
+### Project defaults
+
+Open the agent menu (**Ctrl-b a** or sidebar **x**) and choose **p** to edit
+the project's preferred provider, launch folder, arguments and worktree mode.
+Tab moves between fields; arrows choose the provider; arrows/Space toggle
+worktree mode. Enter on **Save project defaults** saves; Escape cancels.
+**Reset saved defaults** clears only that project's preferences.
+
+Choose **d** in the agent menu to launch the saved default. The menu shows the
+preferred provider and whether it will use a worktree. From the CLI, omit the
+provider to use the saved choice (Codex when no preference exists):
+
+```sh
+tmux-agents launch
+tmux-agents defaults                           # open the editor
+tmux-agents defaults --project app --provider claude --directory ~/code/app --worktree on
+tmux-agents defaults --project app --args-json '["--model","MODEL_NAME"]'
+tmux-agents defaults --project app --show
+tmux-agents defaults --project app --reset
+```
+
+Explicit launch options override saved values. **--no-worktree** forces a shared
+checkout; **--worktree** forces isolation. An empty saved folder follows the last
+focused terminal. Explicit trailing agent arguments replace saved arguments;
+**--no-default-args** suppresses saved arguments, and **--no-defaults** ignores
+all preferences for one launch. Saved arguments apply only when launching the
+preferred provider, so another provider does not receive incompatible flags.
+Changing the saved provider clears its old arguments unless replacement arguments
+are supplied in the same update. The editor keeps separate argument drafts while
+you switch providers, so switching back restores that provider's in-progress text.
+The editor accepts normal quoted argument text; the CLI accepts an argv JSON
+array. Both pass arguments literally, without shell evaluation.
+
+Defaults are keyed by project/session name and stored privately in
+`project-defaults.json` under the tmux-agents state root. Same-name projects on
+this machine's tmux servers share them. They persist across restarts/uninstall;
+repository files are never imported as launch settings. Sidebar project rename
+moves its defaults, refusing to overwrite another saved project's preferences.
+A direct native tmux rename uses the new name's defaults; the old saved entry
+remains available. Missing saved folders and invalid settings stop launch with
+an error; `--no-defaults` allows a one-off launch while settings are repaired.
+
+Saving preferences does not change running agents. New-project form choices are
+one-off choices and do not overwrite saved defaults or inherit hidden arguments.
+History resume keeps its recorded conversation and directory, ignoring defaults.
+
 ### Optional agent worktrees
 
-In the agent menu, **c / a / o** launches Codex / Claude / OpenCode normally;
+In the agent menu, **c / a / o** launches Codex / Claude / OpenCode in a shared checkout;
 **C / A / O** launches that provider in a new Git worktree. In the new-project
 form, select the Agent field and press **w** or Space to toggle worktree mode.
 It is off by default.

@@ -25,6 +25,7 @@ SHORTCUTS = [
     ('Enter', 'Navigation / Open selected project or agent'),
     ('x', 'Navigation / Launch an agent in a new window'),
     ('n (agent menu)', 'Navigation / Create a project with its first agent'),
+    ('d / p (agent menu)', 'Launch / Project default agent / Edit project defaults'),
     ('C / A / O (agent menu)', 'Launch / Codex, Claude or OpenCode in a new Git worktree'),
     ('w (new project, Agent field)', 'Launch / Toggle a separate Git worktree'),
     ('r', 'Navigation / Rename project or conversation label'),
@@ -50,7 +51,7 @@ SHORTCUTS = [
 ]
 
 
-def open_popup(prefix, paths, kind='help', client='', window=''):
+def open_popup(prefix, paths, kind='help', client='', window='', project=''):
     if not client:
         client = run_tmux(prefix, 'display-message', '-p', '#{client_name}')[1].strip()
     if not client:
@@ -63,17 +64,17 @@ def open_popup(prefix, paths, kind='help', client='', window=''):
     except ValueError:
         columns, rows = 100, 36
     width, height = max(10, min(78, columns - 4)), max(5, min(28, rows - 4))
-    if kind == 'new-project':
+    if kind in ('new-project','defaults'):
         height=max(5,min(12,rows-4))
     script = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'bin', 'tmux-agents')
     command = shlex.join(['env', 'TMUX_AGENTS_STATE_DIR=' + state_root(), sys.executable,
                           script, *cli_socket_flags(prefix), 'popup', '--kind', kind, '--client', client,
-                          '--window',window])
+                          '--window',window,'--project',project])
     # This command intentionally lives until its overlay closes. No daemon or
     # ensure lock is held, and no real pane is created or replaced.
     result = subprocess.run(['tmux', *prefix, 'display-popup', '-E', '-c', client,
         '-w', str(width), '-h', str(height), '-x', 'C', '-y', 'C', '-b', 'rounded',
-        '-T', ' Attention ' if kind == 'attention' else ' New project ' if kind == 'new-project' else ' History ' if kind == 'history' else ' Projects ' if kind == 'sessions' else ' Shortcuts ',
+        '-T', ' Project defaults ' if kind == 'defaults' else ' Attention ' if kind == 'attention' else ' New project ' if kind == 'new-project' else ' History ' if kind == 'history' else ' Projects ' if kind == 'sessions' else ' Shortcuts ',
         '-s', 'fg=%s,bg=%s' % (theme.PALETTE['fg'], theme.PALETTE['bg']),
         '-S', 'fg=%s,bg=%s' % (theme.PALETTE['accent'], theme.PALETTE['bg']), command],
         capture_output=True, text=True)

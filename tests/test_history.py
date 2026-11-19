@@ -104,6 +104,9 @@ class HistoryTest(unittest.TestCase):
     def test_native_hooks_record_live_jump_and_exact_resume_for_each_provider(self):
         self.assertEqual(self.t('-f','/dev/null','new-session','-d','-s','app','-x','180','-y','40','sleep','90').returncode,0)
         self.addCleanup(lambda:self.t('kill-server'))
+        # Resume must not inherit or even require valid fresh-launch settings.
+        Path(self.env['TMUX_AGENTS_STATE_DIR']).mkdir(parents=True,exist_ok=True)
+        (Path(self.env['TMUX_AGENTS_STATE_DIR'])/'project-defaults.json').write_text('invalid JSON')
         for provider in history.PROVIDERS:
             with self.subTest(provider=provider):
                 executable=Path(self.temp.name)/provider

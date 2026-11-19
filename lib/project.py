@@ -76,7 +76,7 @@ def run(prefix,client,window,launch):
                         error='Enter a project folder'; selected=1; continue
                     output=io.StringIO()
                     args=SimpleNamespace(kind=KINDS[kind],exe='',launch_args=[],env=[],window=window,
-                                         project=name.strip(),directory=directory,client=client,worktree=worktree,branch='')
+                                         project=name.strip(),directory=directory,client=client,worktree=worktree,branch='',no_default_args=True)
                     with contextlib.redirect_stdout(output):
                         rc=launch(args,prefix)
                     if not rc: return

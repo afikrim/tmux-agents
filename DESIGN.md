@@ -79,6 +79,13 @@ pausing at both ends. Side-panel focus preserves the selected terminal title.
 Navigation uses text. The user-requested sleeping kaomoji `(－ω－) zzZ` identifies idle captions.
 
 ## Components
+Project defaults are an explicit popup editor, separate from one-off agent
+creation. The agent menu previews the preferred provider/worktree choice and
+offers a direct launch. Provider arguments are scoped to the preferred provider;
+explicit launch overrides win. Cancel preserves settings, Reset affects one
+project, and saving never alters running agents. Preferences are machine-local
+and keyed by project/session name; sidebar rename preserves them safely.
+
 The attention inbox reuses searchable popup rows across projects. Approvals
 precede questions/input requests, followed by unread results. Merely opening or
 searching the inbox never acknowledges a result. Navigation validates the live

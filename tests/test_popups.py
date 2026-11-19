@@ -20,6 +20,17 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class PopupModelTest(unittest.TestCase):
+    def test_project_defaults_editor_fits_small_terminals(self):
+        from lib.preferences import frame
+        for width,height in ((24,6),(78,12)):
+            for selected in range(6):
+                lines=frame('工具 project','claude','/very long directory/'*5,
+                            '--model "some model" '*8,True,selected,width,height)
+                plain=[re.sub(r'\x1b\[[0-9;]*m','',line) for line in lines]
+                self.assertEqual(len(lines),height)
+                self.assertTrue(all(ui.cell_width(line)==width for line in plain))
+                self.assertTrue(any(' > ' in line for line in plain))
+
     def test_new_project_form_fits_and_keeps_selected_field_visible(self):
         from lib.project import frame
         for width,height in ((24,5),(78,12)):
@@ -196,6 +207,95 @@ class PopupTTYTest(unittest.TestCase):
              cwd=self.temp.name,env=self.env,capture_output=True,text=True,timeout=10)
         self.assertEqual(relative.returncode,0,relative.stdout+relative.stderr)
         self.assertEqual(self.t('list-windows','-t','relative','-F','#{window_name}').stdout.strip(),'codex')
+
+    def test_project_defaults_editor_and_menu_launch_saved_provider_in_worktree(self):
+        directory=Path(self.temp.name)/'preferred repo'; directory.mkdir()
+        for args in (['init','-q'],['config','user.name','Test'],['config','user.email','test@example.invalid'],
+                     ['config','commit.gpgsign','false']):
+            subprocess.run(['git','-C',str(directory),*args],check=True,capture_output=True)
+        (directory/'file').write_text('committed')
+        subprocess.run(['git','-C',str(directory),'add','.'],check=True,capture_output=True)
+        subprocess.run(['git','-C',str(directory),'commit','-qm','Initial'],check=True,capture_output=True)
+        binaries=Path(self.temp.name)/'bin'; binaries.mkdir()
+        capture=Path(self.temp.name)/'argv.json'
+        for provider in ('codex','claude','opencode'):
+            agent=binaries/provider
+            agent.write_text('#!'+sys.executable+'\nimport json,sys,time\n'
+                             'with open('+repr(str(capture))+',"w") as f: json.dump(sys.argv[1:],f)\ntime.sleep(60)\n')
+            agent.chmod(0o755)
+        self.env['PATH']=str(binaries)+os.pathsep+self.env['PATH']
+        self.t('set-environment','-g','PATH',self.env['PATH'])
+        process=self.popup('defaults','Defaults / alpha')
+        try:
+            # Change away from and back to Claude after editing its arguments;
+            # the provider's draft must survive without leaking to the other.
+            os.write(self.master,('\x1b[C\t'+str(directory)+'\t--model "fixture model"'
+                                  '\x1b[A\x1b[A\x1b[C\x1b[D\t\t\t \t\r').encode())
+            out,err=process.communicate(timeout=5)
+            self.assertEqual(process.returncode,0,out+err)
+        finally:
+            if process.poll() is None: process.terminate(); process.communicate(timeout=3)
+        base=[sys.executable,str(ROOT/'bin/tmux-agents'),'--socket-path',self.prefix[1]]
+        saved=subprocess.run(base+['defaults','--show'],env=self.env,capture_output=True,text=True,timeout=10)
+        record=json.loads(saved.stdout)
+        self.assertEqual(record['provider'],'claude')
+        self.assertEqual(record['arguments'],['--model','fixture model'])
+        self.assertTrue(record['worktree'])
+        self.assertEqual(self.t('list-panes','-a','-F','#{pane_id} #{pane_pid}').stdout,self.original)
+        # The menu's child must use the caller's configured root, even when
+        # the tmux server itself did not inherit that override.
+        self.t('set-environment','-g','HOME',self.temp.name)
+        self.t('set-environment','-gu','TMUX_AGENTS_STATE_DIR')
+        window=self.t('display-message','-p','-c',self.name,'#{window_id}').stdout.strip()
+        menu=subprocess.Popen(base+['menu','--window',window],env=self.env,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        try:
+            output=''; deadline=time.monotonic()+4
+            while 'Launch default / claude / worktree' not in output and time.monotonic()<deadline:
+                output+=self.drain(.1)
+            self.assertIn('Launch default / claude / worktree',output)
+            os.write(self.master,b'd')
+            deadline=time.monotonic()+8
+            while not capture.exists() and time.monotonic()<deadline: self.drain(.1)
+            self.assertTrue(capture.exists())
+            self.assertEqual(json.loads(capture.read_text()),['--model','fixture model'])
+            path=self.t('display-message','-p','-c',self.name,'#{pane_current_path}').stdout.strip()
+            self.assertNotEqual(Path(path).resolve(),directory.resolve())
+            branch=subprocess.check_output(['git','-C',path,'branch','--show-current'],text=True).strip()
+            self.assertTrue(branch.startswith('agents/claude-'))
+            menu.communicate(timeout=5)
+        finally:
+            if menu.poll() is None: menu.terminate(); menu.communicate(timeout=3)
+
+    def test_defaults_cancel_preserves_settings_and_reset_keeps_other_projects(self):
+        base=[sys.executable,str(ROOT/'bin/tmux-agents'),'--socket-path',self.prefix[1],'defaults']
+        for project in ('alpha','beta search'):
+            result=subprocess.run(base+['--project',project,'--provider','opencode'],
+                                  env=self.env,capture_output=True,text=True,timeout=10)
+            self.assertEqual(result.returncode,0,result.stderr)
+        path=Path(self.env['TMUX_AGENTS_STATE_DIR'])/'project-defaults.json'
+        before=(path.stat().st_mtime_ns,path.read_bytes())
+        process=self.popup('defaults','Defaults / alpha')
+        try:
+            os.write(self.master,b'\x1b[C')
+            self.drain(.2)
+            os.write(self.master,b'\x1b')
+            process.communicate(timeout=5)
+        finally:
+            if process.poll() is None: process.terminate(); process.communicate(timeout=3)
+        self.assertEqual(before,(path.stat().st_mtime_ns,path.read_bytes()))
+        # Consume the closed overlay's final redraw before waiting for the
+        # next popup's identical title, so input cannot reach the old surface.
+        self.drain(.4)
+        process=self.popup('defaults','Defaults / alpha')
+        try:
+            os.write(self.master,b'\t\t\t\t\t\r')
+            process.communicate(timeout=5)
+        finally:
+            if process.poll() is None: process.terminate(); process.communicate(timeout=3)
+        records=json.loads(path.read_text())
+        self.assertNotIn('alpha',records)
+        self.assertEqual(records['beta search']['provider'],'opencode')
+        self.assertEqual(self.t('list-panes','-a','-F','#{pane_id} #{pane_pid}').stdout,self.original)
 
     def test_new_project_form_can_launch_agent_in_a_worktree(self):
         directory=Path(self.temp.name)/'source repo'

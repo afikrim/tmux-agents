@@ -25,7 +25,7 @@ _sid_cache = {}
 def state_root():
     root = os.environ.get("TMUX_AGENTS_STATE_DIR")
     if root:
-        return root
+        return os.path.abspath(os.path.expanduser(root))
     return os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "tmux-agents")
 
 

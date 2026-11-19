@@ -20,9 +20,9 @@ import time
 
 BASE = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.insert(0, BASE)
-from lib import adapters, detect, status as st, store, ui, theme, activity, history  # noqa: E402
+from lib import adapters, detect, status as st, store, ui, theme, activity, history, defaults  # noqa: E402
 from lib.tmuxutil import (cli_socket_flags, resolve_socket,
-                           socket_id_of, state_paths,  # noqa: E402
+                          socket_id_of, state_paths, state_root,  # noqa: E402
                           run_tmux, tmux_lines)
 
 SIDEBAR_WIDTH = 32
@@ -982,19 +982,27 @@ def do_menu(prefix, origin_window="", origin_pane=""):
             target = cur.strip() if rc == 0 else ""
     script = os.path.join(BASE, "bin", "tmux-agents")
     items = []
+    base=['env','TMUX_AGENTS_STATE_DIR='+state_root(),sys.executable,script,*cli_socket_flags(prefix)]
+    command=shlex.join([*base,'launch','--window',target])
+    try:
+        record=defaults.get(defaults.project_name(prefix,target))
+        label='Launch default / '+record.get('provider','codex')+(' / worktree' if record.get('worktree') else '')
+    except (ValueError,OSError): label='Launch default / check saved settings'
+    items+=[label,'d','run-shell "'+esc_tmux(command)+'"']
     for kind in ("codex", "claude", "opencode"):
-        command = shlex.join([sys.executable, script, *cli_socket_flags(prefix),
-                              "launch", "--window", target, kind])
+        command = shlex.join([*base,"launch", "--window", target, '--no-worktree', kind])
         cmd = 'run-shell "' + esc_tmux(command) + '"'
         key = 'a' if kind=='claude' else kind[0]
-        items += [kind[0].upper() + kind[1:], key, cmd]
-        command = shlex.join([sys.executable, script, *cli_socket_flags(prefix),
-                              'launch','--window',target,'--worktree',kind])
+        items += [kind.capitalize()+' / shared checkout', key, cmd]
+        command = shlex.join([*base,'launch','--window',target,'--worktree',kind])
         items += [kind.capitalize()+' / new Git worktree',key.upper(),
                   'run-shell "'+esc_tmux(command)+'"']
-    command=shlex.join([sys.executable,script,*cli_socket_flags(prefix),'new-project',
+    command=shlex.join([*base,'new-project',
                         '--window',target,'--client','#{client_name}'])
     items += ['New project + agent','n','run-shell "'+esc_tmux(command)+'"']
+    command=shlex.join([*base,'defaults','--window',target,
+                        '--client','#{client_name}'])
+    items+=['Project defaults','p','run-shell "'+esc_tmux(command)+'"']
     run_tmux(prefix, "display-menu", "-T", "New agent", "-t", target, *items)
 
 
@@ -1027,7 +1035,14 @@ def rename_target(prefix, kind, target, name):
     elif kind in ("session", "window"):
         if not name:
             return 1, "Name cannot be empty"
-        rc, _, error = run_tmux(prefix, "rename-" + kind, "-t", target, "--", name)
+        if kind=='session':
+            old=run_tmux(prefix,'display-message','-p','-t',target,'#{session_name}')[1].strip()
+            try:
+                rc,_,error=defaults.rename(old,name,lambda:run_tmux(prefix,'rename-session','-t',target,'--',name))
+            except (ValueError,OSError) as exc:
+                return 1,ui.san(str(exc),0)
+        else:
+            rc, _, error = run_tmux(prefix, "rename-" + kind, "-t", target, "--", name)
     else:
         return 1, "Select a conversation, session or window"
     return rc, ui.san(error, 0).strip()
@@ -1037,11 +1052,6 @@ def rename_target(prefix, kind, target, name):
 
 def cmd_launch(args, prefix=None):
     prefix = prefix if prefix is not None else P(args)
-    kind = args.kind
-    prog = args.exe or LAUNCH_CMDS[kind]
-    extra = list(args.launch_args or [])
-    if extra[:1] == ["--"]:
-        extra = extra[1:]
     if args.window:
         winspec = args.window
     else:
@@ -1069,8 +1079,23 @@ def cmd_launch(args, prefix=None):
             cwd,sess=pane['path'],pane['session_id']
     if not cwd or cwd == "$HOME":
         cwd = os.path.expanduser("~")
-    if getattr(args,'directory',''):
-        cwd=os.path.abspath(os.path.expanduser(args.directory))
+    project=getattr(args,'project','')
+    try:
+        key=defaults.project_name(prefix,sess,project) if project or sess else ''
+        saved={} if getattr(args,'no_defaults',False) else defaults.get(key)
+        raw=list(args.launch_args or [])
+        extra=(raw[1:] if raw[:1]==['--'] else raw) if raw else None
+        resolved=defaults.resolve(saved,provider=args.kind,directory=getattr(args,'directory',None),
+            worktree=getattr(args,'worktree',None),arguments=extra,
+            no_default_args=getattr(args,'no_default_args',False))
+    except (ValueError,OSError) as error:
+        print('launch failed: '+str(error))
+        return 1
+    kind=resolved['provider']
+    prog=args.exe or LAUNCH_CMDS[kind]
+    extra=resolved['arguments']
+    if resolved['directory']:
+        cwd=os.path.abspath(os.path.expanduser(resolved['directory']))
         if not os.path.isdir(cwd):
             print('launch failed: Directory does not exist')
             return 1
@@ -1078,16 +1103,15 @@ def cmd_launch(args, prefix=None):
     # rather than inheriting the first pane of a shared app-server daemon.
     argv = [prog] + (["--no-daemon"] if kind == "codex" and not args.exe else []) + extra
     dest = ["-t", sess] if sess else []
-    env_args = []
+    env_args = ['-e','TMUX_AGENTS_STATE_DIR='+state_root()]
     for item in (args.env or []):
         if "=" in item:
             env_args += ["-e", item]
-    project=getattr(args,'project','')
     worktree=None
-    wants_worktree=getattr(args,'worktree',False)
+    wants_worktree=resolved['worktree']
     branch=getattr(args,'branch','')
     if branch and not wants_worktree:
-        print('launch failed: --branch requires --worktree')
+        print('launch failed: --branch requires worktree mode')
         return 1
     if project:
         if not project.strip() or re.search(r'[.:\x00-\x1f\x7f]',project) or len(project)>120:
@@ -1147,6 +1171,35 @@ def cmd_launch(args, prefix=None):
                            "-c", cwd, *command_argv)
     if rc != 0:
         return launch_failed(err)
+    return 0
+
+
+def cmd_defaults(args):
+    prefix=P(args)
+    project=defaults.project_name(prefix,args.window,args.project)
+    if not project:
+        print('Select a project or use --project NAME',file=sys.stderr)
+        return 1
+    changes={}
+    if args.provider is not None: changes['provider']=args.provider
+    if args.directory is not None: changes['directory']=args.directory
+    if args.worktree is not None: changes['worktree']=args.worktree=='on'
+    try:
+        if args.args_json is not None:
+            try: changes['arguments']=json.loads(args.args_json)
+            except ValueError: raise ValueError('--args-json must be a JSON array of strings') from None
+        if (args.show and (args.reset or changes)) or (args.reset and changes):
+            raise ValueError('Use --show, --reset or updates separately')
+        if args.show:
+            print(json.dumps(defaults.get(project),indent=2))
+        elif args.reset: defaults.reset(project)
+        elif changes: defaults.save(project,changes)
+        else:
+            from lib.popups import open_popup
+            return open_popup(prefix,paths_of(args),'defaults',args.client,args.window,project)
+    except (ValueError,OSError) as error:
+        print(str(error),file=sys.stderr)
+        return 1
     return 0
 
 
@@ -1219,7 +1272,8 @@ def cmd_resume(args):
     else:
         command = ['new-session','-d','-s',record.get('project') or 'history',
                    '-P','-F','#{pane_id}']
-    rc, out, error = run_tmux(prefix, *command, '-n', record['provider'], '-c', directory, *argv)
+    rc, out, error = run_tmux(prefix, *command, '-n', record['provider'], '-c', directory,
+                             '-e','TMUX_AGENTS_STATE_DIR='+state_root(),*argv)
     if rc:
         print(error.strip(), file=sys.stderr)
         return rc
@@ -1669,6 +1723,16 @@ def main(argv=None):
     visit.add_argument('--pane',required=True)
     visit.add_argument('--generation',required=True)
     visit.add_argument('--client',default='')
+    prefs=sub.add_parser('defaults',help='Edit saved project launch defaults')
+    prefs.add_argument('--project',default='')
+    prefs.add_argument('--window',default='')
+    prefs.add_argument('--client',default='')
+    prefs.add_argument('--show',action='store_true')
+    prefs.add_argument('--reset',action='store_true')
+    prefs.add_argument('--provider',choices=defaults.PROVIDERS,default=None)
+    prefs.add_argument('--directory',default=None)
+    prefs.add_argument('--args-json',default=None)
+    prefs.add_argument('--worktree',choices=('on','off'),default=None)
     resume = sub.add_parser('resume', help='Open a live or saved conversation from history')
     resume.add_argument('record')
     resume.add_argument('--client', default='')
@@ -1681,9 +1745,10 @@ def main(argv=None):
     rn.add_argument("--reset", action="store_true", help="restore automatic conversation title")
     rn.add_argument("name", nargs="?")
     popup = sub.add_parser("popup", help=argparse.SUPPRESS)
-    popup.add_argument("--kind", choices=("sessions", "help", "new-project", "history", "attention"), required=True)
+    popup.add_argument("--kind", choices=("sessions", "help", "new-project", "history", "attention", "defaults"), required=True)
     popup.add_argument("--client", required=True)
     popup.add_argument("--window", default="")
+    popup.add_argument('--project',default='')
     dv = sub.add_parser("diff-view", help=argparse.SUPPRESS)
     dv.add_argument("--target", required=True)
     sub.add_parser("status"); sub.add_parser("install")
@@ -1701,9 +1766,13 @@ def main(argv=None):
     e.add_argument("--agent", default="")
     lz = sub.add_parser("launch")
     lz.add_argument('--project',default='',help='Create a new project session with this agent as its first window')
-    lz.add_argument('--directory',default='')
+    lz.add_argument('--directory',default=None)
     lz.add_argument('--client',default='')
-    lz.add_argument('--worktree',action='store_true',help='Create a separate Git branch and checkout for this agent')
+    tree=lz.add_mutually_exclusive_group()
+    tree.add_argument('--worktree',dest='worktree',action='store_const',const=True,default=None,help='Use a separate Git branch and checkout')
+    tree.add_argument('--no-worktree',dest='worktree',action='store_const',const=False,help='Use a shared checkout for this launch')
+    lz.add_argument('--no-defaults',action='store_true',help='Ignore all saved project preferences for this launch')
+    lz.add_argument('--no-default-args',action='store_true',help='Ignore saved arguments for this launch')
     lz.add_argument('--branch',default='',help='New branch name for --worktree (default: unique agents/ name)')
     lz.add_argument("--window", default="",
                     help="target window id (default: current window)")
@@ -1712,7 +1781,7 @@ def main(argv=None):
     lz.add_argument("--env", action="append", default=[],
                     metavar="KEY=VALUE",
                     help="extra environment for the new window (repeatable)")
-    lz.add_argument("kind", choices=["codex", "claude", "opencode"])
+    lz.add_argument("kind", nargs='?', choices=["codex", "claude", "opencode"], default=None)
     lz.add_argument("launch_args", nargs=argparse.REMAINDER,
                     help="args for the agent; put options above before KIND, "
                          "use '--' before dash-leading agent args")
@@ -1742,6 +1811,8 @@ def main(argv=None):
     elif args.command == "menu":
         do_menu(P(args), getattr(args, "window", ""),
                 getattr(args, "pane", ""))
+    elif args.command=='defaults':
+        sys.exit(cmd_defaults(args) or 0)
     elif args.command == 'visit':
         rc,error=visit_agent(P(args),args.pane,args.generation,args.client)
         if error: print(error,file=sys.stderr)
@@ -1759,7 +1830,10 @@ def main(argv=None):
         from lib.popups import open_popup
         sys.exit(open_popup(P(args),paths_of(args),'new-project',args.client,args.window))
     elif args.command == "popup":
-        if args.kind == 'new-project':
+        if args.kind == 'defaults':
+            from lib.preferences import run
+            run(P(args),args.client,args.window,args.project)
+        elif args.kind == 'new-project':
             from lib.project import run
             run(P(args),args.client,args.window,cmd_launch)
         else:
