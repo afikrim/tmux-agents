@@ -9,7 +9,7 @@ Implement and verify each milestone independently, with a separate commit.
    per task. Linux verification caught and corrected tmux 3.3 single-command quoting.
 4. **Implemented:** Integration health — hook configuration/delivery, last event and unknown-status reasons.
 5. **Implemented:** Project defaults — provider, directory, launch arguments and worktree preference.
-6. **Next:** Optional desktop notifications — return to the exact agent needing attention.
+6. **Implemented:** Optional desktop notifications — return to the exact agent needing attention.
 
 ## Resizing
 

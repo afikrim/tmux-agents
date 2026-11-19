@@ -48,6 +48,8 @@ SHORTCUTS = [
     ('Click tab / Prefix n,p', 'tmux / Switch windows including shells and editors'),
     ('Prefix o / z', 'tmux / Next pane or toggle pane zoom'),
     ('Prefix d', 'tmux / Detach the client'),
+    ('notify --enable', 'Global / Opt in to desktop alerts for attention'),
+    ('notify --list / --open', 'Global / List recent alerts and return to one'),
 ]
 
 

@@ -91,6 +91,21 @@ precede questions/input requests, followed by unread results. Merely opening or
 searching the inbox never acknowledges a result. Navigation validates the live
 agent generation before switching to its exact pane; stale entries fail safely.
 
+Desktop notifications are opt-in per server and off by default. The daemon
+sends newly unread native attention (question, input decision, approval) and
+explicit native completions while the agent is alive. Three owned notifier
+processes may run at once, each with a deadline and bounded nonblocking output;
+plain idle, unknown, process exits, screen-only, manual, repeated and seeded
+backlog never alert. Text is generic status wording only, with no titles,
+prompts, output, or directories. Linux uses notify-send with an Open action,
+macOS uses terminal-notifier with an Open/execute callback carrying only
+opaque routing IDs (socket, state root, saved notification ID).
+Opening reuses the exact-generation inbox validation and fails safely on
+stale targets or detached/replaced clients. Saved routes pin pane generation
+and the original client's PID and creation time. Dedupe is bounded and
+persistent, including ties at its timestamp boundary; enable and daemon
+startup skip backlog. Missing backends degrade silently.
+
 Conversation history uses the existing popup geometry and search controls.
 Entries show a conversation title, provider, project and last-seen date.
 Enter visits a verified live pane or resumes the exact provider conversation;

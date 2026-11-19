@@ -56,6 +56,45 @@ opening the popup. Opening/searching the inbox does not mark items read; the
 normal real-terminal visit does. Resolved requests disappear on refresh.
 An exited or replaced agent is rejected rather than opening an unrelated pane.
 
+### Desktop notifications (opt-in, off by default)
+
+No desktop alerts are sent unless you opt in per tmux server. When enabled,
+the daemon shows a generic alert for a newly unread native attention event
+(explicit question, typed input decision, or approval) and for an unseen
+completion reported by a native hook while the agent is still alive. Plain
+idle, unknown, process exits, screen-only prompts, manual events and repeated
+polls never alert. Enabling and daemon startup skip existing backlog.
+Displaying an alert does not mark it read; opening its real terminal does.
+
+```sh
+tmux-agents notify --enable            # opt in for this server
+tmux-agents notify --status            # show opt-in state and backend
+tmux-agents notify --list --json       # recent alert routing IDs
+tmux-agents notify --open --id ID       # use an ID from --list
+tmux-agents notify --disable           # opt out again
+```
+
+Linux uses `notify-send` with an Open action where the desktop supports it;
+macOS uses `terminal-notifier` with a click callback to the exact agent pane.
+Install the native backend first (Linux: your distribution's `libnotify`
+package providing `notify-send` with action support; macOS:
+`brew install terminal-notifier`). Your desktop must allow notifications.
+No desktop packages are installed automatically. Headless
+machines and missing backends degrade silently: the sidebar and daemon keep
+working. Nothing is spawned while disabled; at most three notifier processes
+run at once, with a two-minute action timeout. If all slots are busy, pending
+events are reconsidered while still current. Alert text is generic wording;
+no titles, prompts, tool output, or directories are included. Opening uses
+the same exact-generation check as the inbox, the same socket and state
+root, and a saved attached-client identity. The most recently active client
+in the agent's project is preferred, otherwise the most recently active client
+on that server. Clicking never falls back to another client. No attached client
+means no alert. Stale panes, replaced agents, detached or replaced clients and
+other sockets fail safely. Opening selects the tmux pane; you may still need to
+bring your terminal app to the foreground. Linux actions depend on the desktop
+notification service. `--list`/`--open` also work while a saved route is retained
+(up to 50 recent routes). Disabling stops pending workers and rejects callbacks.
+
 ### Conversation history
 
 **Ctrl-b, H** (or **h** in the sidebar) opens searchable conversation history.
