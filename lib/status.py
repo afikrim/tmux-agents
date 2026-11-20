@@ -137,6 +137,11 @@ def classify(agent, event, screen_text, alive, prev, screen_changed,
     if attn:
         return attn, "screen"
 
+    # A passive composer can remain painted while a native tool is executing.
+    # Do not let that idle footer hide a current, identity-bound running event.
+    if fresh and kind == "running":
+        return "running", "event"
+
     # Existing interactive sessions may predate installed hooks. Recognize
     # their current composer/footer, never scrollback or arbitrary prose.
     if agent in ("codex", "claude"):
@@ -145,10 +150,6 @@ def classify(agent, event, screen_text, alive, prev, screen_changed,
             return "running", "screen"
         if re.search(r"^\s*[›❯](?:\s|$)", tail, re.M):
             return "idle", "screen"
-
-    # 4. Bound running event.
-    if fresh and kind == "running":
-        return "running", "event"
 
     # 5. Observed activity.
     if screen_changed:

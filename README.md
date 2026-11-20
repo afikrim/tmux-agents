@@ -145,22 +145,44 @@ is local metadata, not a backup or a way to transfer provider chats to another
 machine. The CLI equivalents are `tmux-agents history --list` and
 `tmux-agents resume RECORD_ID` (the opaque record ID comes from the list).
 
-Each agent entry has an activity caption below its title. Native file tools
-show their target, such as **Editing app.py**, **Reading README.md** or
-**Searching src**. After a file tool completes, **Working on app.py** identifies
-the last target while the agent continues thinking, when the harness provides
-that metadata. A new tool/turn or an idle/attention event replaces it.
+Each agent entry has an activity caption below its title. Captions follow
+native tool and lifecycle events, rather than a fixed list of three actions:
+
+- File tools: **Editing app.py**, **Reading README.md**, **Searching src**.
+- Commands: **Running · pytest**, **Running · git status**, or the native short
+  description, such as **Running · Run regression tests**.
+- Delegation: **Delegating · Review auth flow** or the subagent profile.
+- Web tools: **Browsing example.com**, without URL paths or query strings.
+- Planning, task updates, compaction, retries, response generation and tool
+  failures use their own captions when the harness exposes those events.
+- Other tools, including arbitrary MCP tools, get a readable native name,
+  such as **Github · Create pull request**, without a new translation rule.
+
+After a file tool completes, **Working on app.py** identifies the last target
+while the agent thinks; other tools use **Thinking · [last activity]**.
+A new tool/turn or an idle/attention event replaces it. Long captions scroll
+on focus or hover independently from the conversation title.
 **Need input** and **Need approval** always take priority; idle agents show
 `(－ω－) zzZ`. Missing targets retain generic action captions such as
 **Editing files**, **Running command** or **Thinking**.
 
-Only filename/search-scope basenames (at most 256 UTF-8 bytes) are retained for
-these details. Full paths, file contents, patch bodies, search queries, raw
-commands, tool output and chat text are not stored in caption metadata or
-desktop alerts. Expired or replaced agent events cannot supply a filename.
-Claude/Codex hooks pick up the change on their next event. Existing OpenCode
-sessions need a restart to load the updated tool bridge; their current generic
-captions continue working. Running agents are never restarted automatically.
+Caption metadata retains bounded tool identifiers, filename/scope basenames,
+executable names and short native command/agent activity descriptions. It does
+not retain full paths, file contents, patch bodies, search queries, command
+arguments, error/tool output, delegated prompts or arbitrary MCP descriptions.
+Desktop alerts remain generic. Expired or replaced agent events cannot supply
+details. Thinking/response events report their stage, never reasoning text.
+
+Coverage depends on native events: some operations (for example, Codex hosted
+tools outside the local hook path) cannot provide a tool caption. Without hooks,
+the sidebar shows an honest observed/unknown fallback. Run **tmux-agents doctor**
+to distinguish configured hooks from confirmed delivery. Codex users may need to
+review new/changed definitions in **/hooks**; trust is never bypassed. See the
+[Codex hook reference](https://learn.chatgpt.com/docs/hooks) for coverage and trust.
+Re-run `tmux-agents integrate codex` or `tmux-agents integrate claude` to register
+new lifecycle events. Existing OpenCode sessions need a manual restart to load
+the updated bridge, which supports both legacy and current `session.next.*`
+SDK event shapes. Running agents are never restarted automatically.
 
 Moving through projects previews only that project's agents; Enter or clicking
 switches to the project and focuses its main terminal, even if its sidebar was

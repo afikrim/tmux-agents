@@ -23,11 +23,13 @@ HOOK_SCRIPT = os.path.join(BASE, "hooks", "agent-event")
 CLAUDE_EVENTS = [
     "SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse",
     "PermissionRequest", "Stop", "SessionEnd", "Notification",
+    'PostToolUseFailure','SubagentStart','SubagentStop','PreCompact','PostCompact',
 ]
 CODEX_EVENTS = [
     "SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse",
     "PermissionRequest", "Stop", "SessionEnd", "PreCompact",
     "Interrupt", "PostCompact",
+    'SubagentStart','SubagentStop','PreModelRequest','PostModelRequest',
 ]
 # OpenCode v2 data.on event -> hook_event_name fed to hooks/agent-event.
 OPENCODE_MAP = {
@@ -85,8 +87,10 @@ def hook_kind(provider, event_name, payload):
     if low == "sessionstart":
         return "idle"
     if low in ("userpromptsubmit", "posttooluse",
-               "precompact", "postcompact", "sessioncreated"):
+               "precompact", "postcompact", "sessioncreated",'posttoolusefailure',
+               'subagentstart','subagentstop','premodelrequest','postmodelrequest'):
         return "running"
+    if low in ('responsestarted','thinkingstarted','retrying'):return 'running'
     if low == "pretooluse":
         tool = str(payload.get("tool_name", "") or payload.get("tool", ""))
         if tool == "ExitPlanMode":

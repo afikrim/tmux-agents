@@ -33,6 +33,7 @@ class TargetMetadataTest(unittest.TestCase):
                              'Working on '+target)
         patch_text='*** Begin Patch\n*** Update File: /private/src/app.py\n@@\n-SECRET OLD\n+SECRET NEW\n*** End Patch'
         for data in (patch_text,dict(input=patch_text),dict(patch=patch_text),
+                     dict(command=patch_text),
                      json.dumps(dict(input=patch_text))):
             self.assertEqual(activity.hook_target('PreToolUse',dict(tool_name='apply_patch',tool_input=data)),'app.py')
         self.assertEqual(activity.hook_target('PreToolUse',dict(tool_name='read',tool_target='/src/工具.py')),'工具.py')
@@ -92,7 +93,7 @@ class NativeCaptionTest(unittest.TestCase):
     def test_codex_claude_and_opencode_targets_reach_live_sidebar_captions(self):
         for provider,tool,data in (
             ('claude','Edit',dict(tool_input=dict(file_path='/private/project/app.py',old_string='SECRET CONTENT'))),
-            ('codex','apply_patch',dict(tool_input=dict(input='*** Begin Patch\n*** Update File: /private/project/app.py\n@@\n+SECRET CONTENT\n*** End Patch'))),
+            ('codex','apply_patch',dict(tool_input=dict(command='*** Begin Patch\n*** Update File: /private/project/app.py\n@@\n+SECRET CONTENT\n*** End Patch'))),
             ('opencode','edit',dict(tool_target='app.py'))):
             pane=self.agent(provider)
             state=self.hook(pane,provider,'PreToolUse',tool_name=tool,**data)
@@ -119,6 +120,65 @@ class NativeCaptionTest(unittest.TestCase):
         store.append_event(self.paths,pane,'running',agent='claude',agent_pid=int(pid),agent_start=float(start),
                            socket_id=self.paths['sid'],ts=time.time()-8000,action='Editing files',target='app.py')
         self.assertNotIn('app.py',ta['daemon_once'](self.prefix,self.paths)['panes'][pane]['caption'])
+
         self.hook(pane,'claude','PreToolUse',tool_name='Edit',tool_input=dict(file_path='/tmp/app.py'))
         self.t('respawn-pane','-k','-t',pane,'sleep','120')
         self.assertNotIn('app.py',ta['daemon_once'](self.prefix,self.paths)['panes'][pane]['caption'])
+
+    def test_all_native_tool_names_and_task_summaries_reach_captions(self):
+        pane=self.agent('claude')
+        cases=[('Bash',dict(command='pytest --token SECRET',description='Run regression tests'),'Running · Run regression tests'),
+               ('Agent',dict(description='Review auth flow',prompt='PRIVATE DELEGATE PROMPT'),'Delegating · Review auth flow'),
+               ('WebFetch',dict(url='https://example.com/private?token=SECRET'),'Browsing example.com'),
+               ('mcp__github__create_pull_request',dict(body='PRIVATE PR BODY'*10000),'Github · Create pull request'),
+               ('TodoWrite',dict(todos=[dict(content='PRIVATE TASK CONTENT')]),'Updating tasks'),
+               ('update_plan',dict(plan=[dict(step='PRIVATE PLAN')]),'Planning')]
+        for tool,data,expected in cases:
+            info=self.hook(pane,'claude','PreToolUse',tool_name=tool,tool_input=data)
+            self.assertEqual(info['caption'],expected)
+        failed=self.hook(pane,'claude','PostToolUseFailure',tool_name='Bash',
+                         tool_input=dict(command='pytest'),error='PRIVATE ERROR')
+        self.assertEqual(failed['caption'],'Tool failed · Bash')
+        started=self.hook(pane,'claude','SubagentStart',agent_type='Explore')
+        self.assertEqual(started['caption'],'Delegating · Explore')
+        stopped=self.hook(pane,'claude','SubagentStop',agent_type='Explore')
+        self.assertEqual(stopped['status'],'running')
+        compact=self.hook(pane,'claude','PreCompact')
+        self.assertEqual(compact['caption'],'Compacting context')
+        raw=Path(self.paths['events']).read_text()
+        for secret in ('SECRET','PRIVATE DELEGATE PROMPT','PRIVATE PR BODY','PRIVATE TASK CONTENT','PRIVATE ERROR'):
+            self.assertNotIn(secret,raw)
+
+
+class HarnessActivityTest(unittest.TestCase):
+    def test_long_activity_caption_scrolls_without_changing_hit_map(self):
+        from lib import ui
+        sessions=[dict(id='$1',name='project',attached=True,windows=[dict(id='@1',panes=[
+            dict(id='%1',agent='codex',status='running',caption='Running · Run regression tests for all providers')])])]
+        rows=ui.build_rows(sessions)
+        first=ui.frame(rows,sessions,2,0,24,30,return_hits=True,caption_elapsed=0)
+        later=ui.frame(rows,sessions,2,0,24,30,return_hits=True,caption_elapsed=4)
+        caption_y=max(y for y,i in first[-1].items() if rows[i]['kind']=='pane')
+        self.assertNotEqual(first[0][caption_y-1],later[0][caption_y-1])
+        self.assertEqual(dict(first[-1]),dict(later[-1]))
+
+    def test_dynamic_tools_commands_and_descriptions(self):
+        for tool,data,expected in (
+            ('Bash',dict(command='rtk proxy python3 -m pytest --token SECRET'),'Running · pytest'),
+            ('exec_command',dict(cmd='git status --short'),'Running · git status'),
+            ('mcp__new_service__perform_new_operation',dict(description='PRIVATE BODY'),'New service · Perform new operation'),
+            ('mcp__database__execute_query',dict(description='PRIVATE BODY',command='SECRET'),'Running · Database · Execute query')):
+            payload=dict(tool_name=tool,tool_input=data)
+            meta=activity.hook_metadata('PreToolUse',payload)
+            self.assertEqual(activity.caption('running',activity.hook_action('PreToolUse',payload),
+                             **meta),expected)
+        self.assertEqual(activity.safe_detail('Run tests token=SECRET'),'Run tests token=<redacted>')
+        self.assertEqual(activity.safe_detail('Read /private/token'),'')
+        self.assertEqual(activity.safe_detail('multiline\nbody'),'')
+
+    def test_native_running_overrides_passive_composer_but_not_attention_widget(self):
+        from lib import status
+        ev=dict(kind='running',ts=time.time())
+        self.assertEqual(status.classify('codex',ev,'› ',True,'idle',False,True),('running','event'))
+        self.assertEqual(status.classify('codex',ev,'Allow execution? [y/n]',True,'idle',False,True),('needs-approval','screen'))
+        self.assertEqual(status.classify('codex',ev,'› ',True,'idle',False,False),('idle','screen'))

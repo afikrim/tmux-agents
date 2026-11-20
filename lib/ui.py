@@ -328,7 +328,7 @@ def summary_line(row, width, background):
 
 
 def frame(rows, sessions, cursor, top, width, height, focused=True, scroll_elapsed=0.0, return_hits=False,
-          hover_ref=None, hover_elapsed=0.0):
+          hover_ref=None, hover_elapsed=0.0,caption_elapsed=None,hover_caption_elapsed=None):
     """Two independently scrolled sections with an explicit mouse hit map."""
     width, height = max(1, width), max(1, height)
     offsets = dict(top) if isinstance(top, dict) else {"projects": 0, "agents": 0}
@@ -369,7 +369,14 @@ def frame(rows, sessions, cursor, top, width, height, focused=True, scroll_elaps
                 else:
                     status = row.get("status", "unknown")
                     color = "amber" if status in ("question","needs-input") else "rose" if status=="needs-approval" else "muted"
-                    add(styled("     "+row.get("caption", ""),width,color,background))
+                    caption=row.get('caption','')
+                    elapsed=None
+                    if row['ref']==hover_ref:
+                        elapsed=hover_elapsed if hover_caption_elapsed is None else hover_caption_elapsed
+                    elif index==cursor and focused:
+                        elapsed=scroll_elapsed if caption_elapsed is None else caption_elapsed
+                    if elapsed is not None:caption=scroll_text(caption,max(0,width-5),elapsed)
+                    add(styled("     "+caption,width,color,background))
             if stride >= 3 and (key == "projects" or position < len(visible)-1):
                 add(styled("",width))
     # Reserve the bottom third, including heading/divider, even for short

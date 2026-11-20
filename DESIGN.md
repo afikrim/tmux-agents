@@ -57,8 +57,12 @@ project has a title, counts beneath it and one blank row between projects.
 Each live agent pane has a title and supporting activity caption, with one blank
 row between entries. Native tool targets read like Editing app.py or Reading
 README.md; thinking after a file tool can read Working on app.py. Details use
-bounded basenames only, with generic action fallback and explicit attention
-states taking priority. Each entry keeps a stable
+bounded basenames. Native command/agent activity summaries, executable names,
+web hosts and readable identifiers for arbitrary tools extend the same caption
+row. Native lifecycle stages include thinking, responding, compaction and retry;
+no reasoning text or raw tool arguments are retained. Long captions scroll on
+focus/hover with an independent timer; explicit attention states take priority.
+Each entry keeps a stable
 real-pane target for activation. Section headings and a
 single divider carry the hierarchy. Shortcut hints live in a searchable popup,
 not permanent footers. Native centered popups inherit the Ink / Mint palette

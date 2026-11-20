@@ -10,7 +10,7 @@ import fcntl
 import json
 import os
 import time
-from .activity import ACTIONS, safe_target
+from .activity import ACTIONS, safe_target, safe_tool, safe_detail
 
 from .tmuxutil import state_paths
 
@@ -50,7 +50,8 @@ def read_state(paths):
 
 
 def append_event(paths, pane_id, kind, agent="", agent_pid=0,
-                 agent_start=0, socket_id="", ts=None, action="", completed=False, origin="", target=""):
+                 agent_start=0, socket_id="", ts=None, action="", completed=False, origin="", target="",
+                 tool='',detail='',phase=''):
     rec = {"t": ts if ts is not None else time.time(), "pane": pane_id,
            "kind": kind, "agent": agent or "", "apid": agent_pid or 0,
            "astart": agent_start or 0, "sock": socket_id or ""}
@@ -58,6 +59,12 @@ def append_event(paths, pane_id, kind, agent="", agent_pid=0,
         rec["action"] = action
         target=safe_target(target)
         if target:rec['target']=target
+    if phase in ('start','end','failed'):
+        tool=safe_tool(tool)
+        if tool:
+            rec['tool']=tool; rec['phase']=phase
+            detail=safe_detail(detail)
+            if detail:rec['detail']=detail
     if kind == "needs-input":
         rec["input_required"] = True
     if completed:

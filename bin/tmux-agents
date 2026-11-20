@@ -324,7 +324,10 @@ def daemon_once(prefix, paths, tab_animation=None, allow_notify=True):
             "status": s, "source": src, "pid": pid,
             "reason": st.unknown_reason(evinfo,bound_ok) if s=='unknown' else '',
             "active": p["active"], "updated": time.time(),
-            "caption": activity.caption(s, action, src,target), **notices}
+            "caption": activity.caption(s, action, src,target,
+                tool=ev.get('tool','') if action and ev else '',
+                detail=ev.get('detail','') if action and ev else '',
+                phase=ev.get('phase','') if action and ev else ''), **notices}
         if (_notify is not None and notices.get("unread") and notices.get("notice_key")):
             try:
                 ev_origin = ev.get("origin", "") if ev else ""
@@ -805,6 +808,8 @@ def cmd_sidebar(args):
         editing, edit_text, edit_error = None, "", ""
         scroll_key, scroll_since = None, _t.monotonic()
         hover_key, hover_since, hover_context = None, _t.monotonic(), None
+        caption_key,caption_since=None,_t.monotonic()
+        hover_caption_key,hover_caption_since=None,_t.monotonic()
         project_id = origin_session or None
         rows = []
         decoder = ui.InputDecoder()
@@ -853,16 +858,26 @@ def cmd_sidebar(args):
             focus_key = (current.get("ref"), current.get("name"), winsize[0]) if focused and not editing else None
             if focus_key != scroll_key:
                 scroll_key, scroll_since = focus_key, _t.monotonic()
+            new_caption_key=(current.get('ref'),current.get('caption'),winsize[0])
+            new_hover_caption_key=(hovered.get('ref'),hovered.get('caption'),winsize[0])
+            if new_caption_key!=caption_key:
+                caption_key,caption_since=new_caption_key,_t.monotonic()
+            if new_hover_caption_key!=hover_caption_key:
+                hover_caption_key,hover_caption_since=new_hover_caption_key,_t.monotonic()
             name_space = ui.row_name_width(current, winsize[0]) if current else 0
             scrolling = bool(focus_key and name_space > 0 and
                              ui.cell_width(current.get("name", "")) > name_space)
             scrolling = scrolling or bool(hover_key and ui.cell_width(hovered.get("name", "")) >
                                           ui.row_name_width(hovered, winsize[0]))
+            scrolling=scrolling or bool(focus_key and ui.cell_width(current.get('caption',''))>max(0,winsize[0]-5))
+            scrolling=scrolling or bool(hover_key and ui.cell_width(hovered.get('caption',''))>max(0,winsize[0]-5))
             frame_size=tuple(winsize)
             lines, top, header_height, body_height, hit_rows = ui.frame(
                 rows, sessions, cursor, top, frame_size[0], frame_size[1], focused,
                 _t.monotonic() - scroll_since, return_hits=True,
-                hover_ref=hover_ref, hover_elapsed=_t.monotonic() - hover_since)
+                hover_ref=hover_ref, hover_elapsed=_t.monotonic() - hover_since,
+                caption_elapsed=_t.monotonic()-caption_since,
+                hover_caption_elapsed=_t.monotonic()-hover_caption_since)
             last_redraw_rows = rows
             if editing and lines:
                 prompt = "Rename " + ("conversation" if editing["kind"] == "pane" else editing["kind"])

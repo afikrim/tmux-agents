@@ -24,5 +24,8 @@ the Agents section keeps its bottom third.
 
 **Implemented:** Native tool targets in agent captions, such as Editing app.py,
 Reading README.md and Working on app.py after a file tool completes. Only
-bounded filename/scope basenames are retained; generic captions remain when
-the harness supplies no safe target.
+bounded filename/scope basenames are retained. Native activity summaries,
+command names, delegation, web hosts, task/planning updates, compaction,
+response/retry stages and arbitrary MCP/tool identifiers are supported.
+Long captions scroll on focus/hover. No transcript or reasoning text is read;
+event coverage is limited to what each harness exposes.
